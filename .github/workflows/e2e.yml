@@ -1,6 +1,7 @@
+---
 name: Test-e2e
 
-on: [push, pull_request]
+"on": [push, pull_request]
 
 jobs:
   build:
@@ -20,12 +21,17 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           cache: "yarn"
-          node-version: "v20.12.1"
+          node-version: "20.12.1"
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-setuptools python3-pip python3-virtualenv chromium-browser libgbm1
+          sudo apt-get install -y \
+            python3-setuptools \
+            python3-pip \
+            python3-virtualenv \
+            chromium-browser \
+            libgbm1
           make install
 
       - name: DB setup
