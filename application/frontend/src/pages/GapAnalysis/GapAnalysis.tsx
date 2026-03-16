@@ -8,7 +8,7 @@ import { Button, Dropdown, DropdownItemProps, Icon, Popup, Table } from 'semanti
 import { LoadingAndErrorIndicator } from '../../components/LoadingAndErrorIndicator';
 import { GA_STRONG_UPPER_LIMIT } from '../../const';
 import { useEnvironment } from '../../hooks';
-import { GapAnalysisPathStart } from '../../types';
+import { GapAnalysisPathStart, OwaspTop10Comparison, SpecializedCheatsheetSection } from '../../types';
 import { getDocumentDisplayName } from '../../utils';
 import { getInternalUrl } from '../../utils/document';
 
@@ -40,6 +40,21 @@ function useQuery() {
 
   return React.useMemo(() => new URLSearchParams(search), [search]);
 }
+
+const getInitialStandardsFromQuery = (searchParams: URLSearchParams) => {
+  const standardParams = searchParams.getAll('standard').filter(Boolean);
+  if (standardParams.length >= 2) {
+    return {
+      base: standardParams[0],
+      compare: standardParams[1],
+    };
+  }
+
+  return {
+    base: searchParams.get('base') ?? '',
+    compare: searchParams.get('compare') ?? '',
+  };
+};
 
 const GetStrength = (score) => {
   if (score == 0) return 'Direct';
@@ -114,15 +129,17 @@ const GetResultLine = (path, gapAnalysis, key) => {
 export const GapAnalysis = () => {
   const standardOptionsDefault = [{ key: '', text: '', value: undefined }];
   const searchParams = useQuery();
+  const initialStandards = getInitialStandardsFromQuery(searchParams);
   const [standardOptions, setStandardOptions] = useState<DropdownItemProps[] | undefined>(
     standardOptionsDefault
   );
-  const [BaseStandard, setBaseStandard] = useState<string | undefined>(searchParams.get('base') ?? '');
-  const [CompareStandard, setCompareStandard] = useState<string | undefined>(
-    searchParams.get('compare') ?? ''
-  );
+  const [BaseStandard, setBaseStandard] = useState<string | undefined>(initialStandards.base);
+  const [CompareStandard, setCompareStandard] = useState<string | undefined>(initialStandards.compare);
   const [gaJob, setgaJob] = useState<string>('');
   const [gapAnalysis, setGapAnalysis] = useState<Record<string, GapAnalysisPathStart>>();
+  const [owaspComparison, setOwaspComparison] = useState<OwaspTop10Comparison>();
+  const [specializedCheatsheetSection, setSpecializedCheatsheetSection] =
+    useState<SpecializedCheatsheetSection>();
   const [loadingStandards, setLoadingStandards] = useState<boolean>(false);
   const [loadingGA, setLoadingGA] = useState<boolean>(false);
   const [error, setError] = useState<string | null | object>(null);
@@ -197,6 +214,13 @@ export const GapAnalysis = () => {
       if (result.data.result) {
         setLoadingGA(false);
         setGapAnalysis(result.data.result);
+        setOwaspComparison(result.data.owasp_top10_comparison);
+        setSpecializedCheatsheetSection(result.data.specialized_cheatsheet_section);
+      } else if (result.data.owasp_top10_comparison) {
+        setLoadingGA(false);
+        setGapAnalysis(undefined);
+        setOwaspComparison(result.data.owasp_top10_comparison);
+        setSpecializedCheatsheetSection(result.data.specialized_cheatsheet_section);
       } else if (result.data.job_id) {
         setgaJob(result.data.job_id);
       }
@@ -204,6 +228,8 @@ export const GapAnalysis = () => {
 
     if (!BaseStandard || !CompareStandard || BaseStandard === CompareStandard) return;
     setGapAnalysis(undefined);
+    setOwaspComparison(undefined);
+    setSpecializedCheatsheetSection(undefined);
     setLoadingGA(true);
     fetchData().catch((e) => {
       setLoadingGA(false);
@@ -282,7 +308,7 @@ export const GapAnalysis = () => {
           </Table.Row>
         </Table.Header>
         <Table.Body>
-          {gapAnalysis && (
+          {gapAnalysis && !specializedCheatsheetSection && (
             <>
               {Object.keys(gapAnalysis)
                 .sort((a, b) =>
@@ -322,6 +348,98 @@ export const GapAnalysis = () => {
           )}
         </Table.Body>
       </Table>
+      {specializedCheatsheetSection && (
+        <div className="specialized-cheatsheets">
+          <h2>{specializedCheatsheetSection.category}</h2>
+          <p>
+            Showing only the specialized OWASP Cheat Sheets for this comparison so the results stay focused.
+          </p>
+          <Table celled padded compact>
+            <Table.Body>
+              {Object.keys(specializedCheatsheetSection.result)
+                .sort((a, b) =>
+                  getDocumentDisplayName(
+                    specializedCheatsheetSection.result[a].start,
+                    true
+                  ).localeCompare(
+                    getDocumentDisplayName(
+                      specializedCheatsheetSection.result[b].start,
+                      true
+                    )
+                  )
+                )
+                .map((key) => (
+                  <Table.Row key={key}>
+                    <Table.Cell textAlign="left" verticalAlign="top" selectable>
+                      <a
+                        href={getInternalUrl(specializedCheatsheetSection.result[key].start)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <p>
+                          <b>{getDocumentDisplayName(specializedCheatsheetSection.result[key].start, true)}</b>
+                        </p>
+                      </a>
+                    </Table.Cell>
+                    <Table.Cell style={{ minWidth: '35vw' }}>
+                      {Object.values<any>(specializedCheatsheetSection.result[key].paths)
+                        .sort((a, b) => a.score - b.score)
+                        .map((path) => GetResultLine(path, specializedCheatsheetSection.result, key))}
+                      {specializedCheatsheetSection.result[key].weakLinks &&
+                        Object.values<any>(specializedCheatsheetSection.result[key].weakLinks)
+                          .sort((a, b) => a.score - b.score)
+                          .map((path) =>
+                            GetResultLine(path, specializedCheatsheetSection.result, key)
+                          )}
+                      {Object.keys(specializedCheatsheetSection.result[key].paths).length === 0 &&
+                        specializedCheatsheetSection.result[key].extra === 0 && <i>No links Found</i>}
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+      {owaspComparison && (
+        <Table celled padded compact style={{ marginTop: '2rem' }}>
+          <Table.Header>
+            <Table.Row>
+              <Table.HeaderCell width={2}>Rank</Table.HeaderCell>
+              <Table.HeaderCell width={6}>OWASP Top 10 2021</Table.HeaderCell>
+              <Table.HeaderCell width={6}>OWASP Top 10 2025</Table.HeaderCell>
+              <Table.HeaderCell width={2}>Changed</Table.HeaderCell>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {owaspComparison.items.map((item) => (
+              <Table.Row key={item.rank}>
+                <Table.Cell>
+                  <b>{item.rank}</b>
+                </Table.Cell>
+                <Table.Cell>
+                  {item.top10_2021?.hyperlink ? (
+                    <a href={item.top10_2021.hyperlink} target="_blank" rel="noopener noreferrer">
+                      {item.top10_2021.section}
+                    </a>
+                  ) : (
+                    item.top10_2021?.section ?? <i>Not mapped</i>
+                  )}
+                </Table.Cell>
+                <Table.Cell>
+                  {item.top10_2025?.hyperlink ? (
+                    <a href={item.top10_2025.hyperlink} target="_blank" rel="noopener noreferrer">
+                      {item.top10_2025.section}
+                    </a>
+                  ) : (
+                    item.top10_2025?.section ?? <i>Not mapped</i>
+                  )}
+                </Table.Cell>
+                <Table.Cell>{item.changed ? 'Yes' : 'No'}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table>
+      )}
     </main>
   );
 };
