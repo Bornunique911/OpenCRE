@@ -130,17 +130,11 @@ class TestCWEParser(unittest.TestCase):
         )
         imported_cwes = {node.sectionID: node for node in entries.results["CWE"]}
 
-        self.assertEqual(
-            imported_cwes["2001"].links[0].document.todict(), cre.todict()
-        )
-        self.assertEqual(
-            imported_cwes["2002"].links[0].document.todict(), cre.todict()
-        )
+        self.assertEqual(imported_cwes["2001"].links[0].document.todict(), cre.todict())
+        self.assertEqual(imported_cwes["2002"].links[0].document.todict(), cre.todict())
 
     @patch.object(requests, "get")
-    def test_register_CWE_applies_fallback_family_mappings(
-        self, mock_requests
-    ) -> None:
+    def test_register_CWE_applies_fallback_family_mappings(self, mock_requests) -> None:
         tmpdir = mkdtemp()
         tmpFile = os.path.join(tmpdir, "cwe.xml")
         tmpzip = os.path.join(tmpdir, "cwe.zip")
@@ -162,7 +156,9 @@ class TestCWEParser(unittest.TestCase):
         auth_cre = defs.CRE(
             id="117-371", name="Use a centralized access control mechanism"
         )
-        authn_cre = defs.CRE(id="113-133", name="Use centralized authentication mechanism")
+        authn_cre = defs.CRE(
+            id="113-133", name="Use centralized authentication mechanism"
+        )
         csrf_cre = defs.CRE(id="028-727", name="CSRF protection")
         ssrf_cre = defs.CRE(id="028-728", name="SSRF protection")
         hardcoded_secret_cre = defs.CRE(
@@ -178,9 +174,7 @@ class TestCWEParser(unittest.TestCase):
         secure_cookie_cre = defs.CRE(
             id="688-081", name='Set "secure" attribute for cookie-based session tokens'
         )
-        deserialization_cre = defs.CRE(
-            id="836-068", name="Deserialization Prevention"
-        )
+        deserialization_cre = defs.CRE(id="836-068", name="Deserialization Prevention")
         self.collection.add_cre(cre=injection_cre)
         self.collection.add_cre(cre=xss_cre)
         self.collection.add_cre(cre=xxe_cre)

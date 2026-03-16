@@ -39,10 +39,14 @@ class TestOwaspTop10_2025Parser(unittest.TestCase):
             )
         )
         self.collection.add_cre(
-            defs.CRE(id="031-447", name="Whitelist all external (HTTP) input", description="")
+            defs.CRE(
+                id="031-447", name="Whitelist all external (HTTP) input", description=""
+            )
         )
         self.collection.add_cre(
-            defs.CRE(id="064-808", name="Encode output context-specifically", description="")
+            defs.CRE(
+                id="064-808", name="Encode output context-specifically", description=""
+            )
         )
         self.collection.add_cre(
             defs.CRE(id="760-764", name="Injection protection", description="")

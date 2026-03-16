@@ -127,7 +127,9 @@ class CWE(ParserInterface):
             if not related_entries:
                 continue
             related_entries = (
-                related_entries if isinstance(related_entries, list) else [related_entries]
+                related_entries
+                if isinstance(related_entries, list)
+                else [related_entries]
             )
             for entry in related_entries:
                 if isinstance(entry, Dict) and entry.get("@CWE_ID"):
@@ -224,8 +226,8 @@ class CWE(ParserInterface):
                         )
                     entries.append(cwe)
                     entries_by_id[cwe.sectionID] = cwe
-                    related_ids_by_cwe[cwe.sectionID] = self.collect_related_weakness_ids(
-                        weakness
+                    related_ids_by_cwe[cwe.sectionID] = (
+                        self.collect_related_weakness_ids(weakness)
                     )
 
         changed = True

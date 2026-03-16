@@ -23,8 +23,14 @@ class TestOwaspAisvsParser(unittest.TestCase):
     def test_parse(self) -> None:
         for cre_id, name in [
             ("227-045", "Identify sensitive data and subject it to a policy"),
-            ("307-507", "Allow only trusted sources both build time and runtime; therefore perform integrity checks on all resources and code"),
-            ("162-655", "Documentation of all components' business or security function"),
+            (
+                "307-507",
+                "Allow only trusted sources both build time and runtime; therefore perform integrity checks on all resources and code",
+            ),
+            (
+                "162-655",
+                "Documentation of all components' business or security function",
+            ),
         ]:
             self.collection.add_cre(defs.CRE(id=cre_id, name=name, description=""))
 
@@ -42,7 +48,9 @@ class TestOwaspAisvsParser(unittest.TestCase):
             "https://github.com/OWASP/AISVS/tree/main/1.0/en/0x10-C01-Training-Data-Governance.md",
             entries[0].hyperlink,
         )
-        self.assertEqual(["227-045", "307-507"], [l.document.id for l in entries[0].links])
+        self.assertEqual(
+            ["227-045", "307-507"], [l.document.id for l in entries[0].links]
+        )
         self.assertEqual("AISVS14", entries[-1].sectionID)
         self.assertEqual(
             "Human Oversight, Accountability & Governance", entries[-1].section

@@ -51,7 +51,11 @@ class TestCheatsheetsParser(unittest.TestCase):
             self.assertEqual(name, cheatsheets_parser.Cheatsheets().name)
             sections = {node.section for node in nodes}
             self.assertIn("Secrets Management Cheat Sheet", sections)
-            secret_entry = [node for node in nodes if node.section == "Secrets Management Cheat Sheet"][0]
+            secret_entry = [
+                node
+                for node in nodes
+                if node.section == "Secrets Management Cheat Sheet"
+            ][0]
             self.assertCountEqual(expected.todict(), secret_entry.todict())
 
     def test_register_supplemental_cheatsheets(self) -> None:
@@ -65,7 +69,9 @@ class TestCheatsheetsParser(unittest.TestCase):
         entries = cheatsheets_parser.Cheatsheets().register_supplemental_cheatsheets(
             cache=self.collection
         )
-        rest = [entry for entry in entries if entry.section == "REST Security Cheat Sheet"][0]
+        rest = [
+            entry for entry in entries if entry.section == "REST Security Cheat Sheet"
+        ][0]
         self.assertEqual(
             "https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html",
             rest.hyperlink,

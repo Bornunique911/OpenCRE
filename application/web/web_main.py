@@ -161,9 +161,7 @@ def _load_owasp_top10_2025_entries() -> list[dict[str, str]]:
 
 def _normalize_standard_name(standard: str) -> str:
     normalized_standard = str(standard).strip()
-    return STANDARD_NAME_ALIASES.get(
-        normalized_standard.lower(), normalized_standard
-    )
+    return STANDARD_NAME_ALIASES.get(normalized_standard.lower(), normalized_standard)
 
 
 def _build_owasp_top10_comparison(
@@ -197,7 +195,8 @@ def _build_owasp_top10_comparison(
         top10_2025 = _load_owasp_top10_2025_entries()
 
     top10_2021_by_rank = {
-        node.sectionID or "": {
+        node.sectionID
+        or "": {
             "section_id": node.sectionID or "",
             "section": node.section or "",
             "hyperlink": node.hyperlink or "",
@@ -217,9 +216,8 @@ def _build_owasp_top10_comparison(
                 "rank": rank,
                 "top10_2021": item_2021,
                 "top10_2025": item_2025,
-                "changed": (item_2021 or {}).get("section") != (item_2025 or {}).get(
-                    "section"
-                ),
+                "changed": (item_2021 or {}).get("section")
+                != (item_2025 or {}).get("section"),
             }
         )
 
@@ -239,7 +237,11 @@ def _build_root_cres_featured_standards(
         for standard_name in standard_names[:ROOT_CRES_FEATURED_STANDARD_LIMIT]:
             nodes = sorted(
                 collection.get_nodes(name=standard_name),
-                key=lambda node: (node.sectionID or "", node.section or "", node.id or ""),
+                key=lambda node: (
+                    node.sectionID or "",
+                    node.section or "",
+                    node.id or "",
+                ),
             )
             if not nodes:
                 continue
@@ -321,7 +323,9 @@ def _build_direct_cre_overlap_map_analysis(
                 node for node in compare_nodes if node.section in allowed_sections
             ]
         elif standards[0] == OWASP_CHEATSHEETS_STANDARD_NAME:
-            base_nodes = [node for node in base_nodes if node.section in allowed_sections]
+            base_nodes = [
+                node for node in base_nodes if node.section in allowed_sections
+            ]
 
     if not base_nodes or not compare_nodes:
         return None

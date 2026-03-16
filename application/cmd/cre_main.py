@@ -41,9 +41,7 @@ def fetch_upstream_json(
 ) -> Dict[str, Any]:
     base_url = os.environ.get("CRE_UPSTREAM_API_URL", "https://opencre.org/rest/v1")
     timeout = timeout or float(os.environ.get("CRE_UPSTREAM_TIMEOUT_SECONDS", "30"))
-    max_attempts = max_attempts or int(
-        os.environ.get("CRE_UPSTREAM_MAX_ATTEMPTS", "4")
-    )
+    max_attempts = max_attempts or int(os.environ.get("CRE_UPSTREAM_MAX_ATTEMPTS", "4"))
     backoff_seconds = backoff_seconds or float(
         os.environ.get("CRE_UPSTREAM_RETRY_BACKOFF_SECONDS", "2")
     )

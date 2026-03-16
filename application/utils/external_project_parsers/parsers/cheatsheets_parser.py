@@ -17,9 +17,7 @@ from application.prompt_client import prompt_client as prompt_client
 
 class Cheatsheets(ParserInterface):
     name = "OWASP Cheat Sheets"
-    cheatsheetseries_base_url = (
-        "https://cheatsheetseries.owasp.org/cheatsheets"
-    )
+    cheatsheetseries_base_url = "https://cheatsheetseries.owasp.org/cheatsheets"
     supplement_data_file = (
         Path(__file__).resolve().parent.parent
         / "data"

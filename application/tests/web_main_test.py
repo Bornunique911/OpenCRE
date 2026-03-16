@@ -855,12 +855,10 @@ class TestMain(unittest.TestCase):
 
         db_mock.return_value.get_gap_analysis_result.return_value = None
         db_mock.return_value.gap_analysis_exists.return_value = False
-        db_mock.return_value.get_nodes.side_effect = (
-            lambda name=None, **kwargs: [base]
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
             if name == "OWASP Top 10 2025"
-            else [compare]
-            if name == "OWASP Web Security Testing Guide (WSTG)"
-            else []
+            else [compare] if name == "OWASP Web Security Testing Guide (WSTG)" else []
         )
         schedule_mock.side_effect = RuntimeError("redis unavailable")
         upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
@@ -885,7 +883,9 @@ class TestMain(unittest.TestCase):
         self, db_mock, schedule_mock, upstream_fetch_mock
     ) -> None:
         broad_cre = defs.CRE(id="064-808", name="Output encoding", description="")
-        llm_specific_cre = defs.CRE(id="161-451", name="Prompt boundary protection", description="")
+        llm_specific_cre = defs.CRE(
+            id="161-451", name="Prompt boundary protection", description=""
+        )
 
         llm = defs.Standard(
             name="OWASP Top 10 for LLM and Gen AI Apps 2025",
@@ -896,7 +896,9 @@ class TestMain(unittest.TestCase):
             defs.Link(ltype=defs.LinkTypes.LinkedTo, document=broad_cre.shallow_copy())
         )
         llm.add_link(
-            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy())
+            defs.Link(
+                ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy()
+            )
         )
 
         generic_cheatsheet = defs.Standard(
@@ -912,17 +914,21 @@ class TestMain(unittest.TestCase):
             section="LLM Prompt Injection Prevention Cheat Sheet",
         )
         llm_cheatsheet.add_link(
-            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy())
+            defs.Link(
+                ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy()
+            )
         )
 
         db_mock.return_value.get_gap_analysis_result.return_value = None
         db_mock.return_value.gap_analysis_exists.return_value = False
-        db_mock.return_value.get_nodes.side_effect = (
-            lambda name=None, **kwargs: [llm]
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [llm]
             if name == "OWASP Top 10 for LLM and Gen AI Apps 2025"
-            else [generic_cheatsheet, llm_cheatsheet]
-            if name == "OWASP Cheat Sheets"
-            else []
+            else (
+                [generic_cheatsheet, llm_cheatsheet]
+                if name == "OWASP Cheat Sheets"
+                else []
+            )
         )
         schedule_mock.side_effect = RuntimeError("redis unavailable")
         upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
@@ -950,7 +956,9 @@ class TestMain(unittest.TestCase):
     def test_gap_analysis_adds_specialized_section_for_api_cheatsheets(
         self, db_mock, schedule_mock, upstream_fetch_mock
     ) -> None:
-        authz_cre = defs.CRE(id="117-371", name="Centralized access control", description="")
+        authz_cre = defs.CRE(
+            id="117-371", name="Centralized access control", description=""
+        )
         base = defs.Standard(
             name="OWASP API Security Top 10 2023",
             sectionID="API1",
@@ -970,12 +978,10 @@ class TestMain(unittest.TestCase):
 
         db_mock.return_value.get_gap_analysis_result.return_value = None
         db_mock.return_value.gap_analysis_exists.return_value = False
-        db_mock.return_value.get_nodes.side_effect = (
-            lambda name=None, **kwargs: [base]
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
             if name == "OWASP API Security Top 10 2023"
-            else [compare]
-            if name == "OWASP Cheat Sheets"
-            else []
+            else [compare] if name == "OWASP Cheat Sheets" else []
         )
         schedule_mock.side_effect = RuntimeError("redis unavailable")
         upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
