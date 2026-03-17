@@ -58,6 +58,13 @@ class TestCheatsheetsParser(unittest.TestCase):
                     document=cre, ltype=defs.LinkTypes.AutomaticallyLinkedTo
                 )
             ],
+            tags=[
+                "family:guidance",
+                "subtype:cheatsheet",
+                "source:owasp_cheatsheets",
+                "audience:developer",
+                "maturity:stable",
+            ],
         )
         self.maxDiff = None
         for name, nodes in entries.results.items():
