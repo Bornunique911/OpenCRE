@@ -53,10 +53,13 @@ class TestCheatsheetsParser(unittest.TestCase):
             name="OWASP Cheat Sheets",
             hyperlink="https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
             section="Secrets Management Cheat Sheet",
-            links=[
-                defs.Link(
-                    document=cre, ltype=defs.LinkTypes.AutomaticallyLinkedTo
-                )
+            links=[defs.Link(document=cre, ltype=defs.LinkTypes.LinkedTo)],
+            tags=[
+                "family:guidance",
+                "subtype:cheatsheet",
+                "source:owasp_cheatsheets",
+                "audience:developer",
+                "maturity:stable",
             ],
         )
         self.maxDiff = None
