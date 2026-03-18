@@ -5,6 +5,19 @@ main#gap-analysis {
   span.name {
     padding: 0 10px;
   }
+
+  .specialized-cheatsheets {
+    margin-top: 1.5rem;
+
+    h2 {
+      margin-bottom: 0.4rem;
+    }
+
+    p {
+      margin-bottom: 0.9rem;
+      color: #4a5568;
+    }
+  }
 }
 
 @media (min-width: 0px) and (max-width: 500px) {

@@ -33,6 +33,51 @@ logger.setLevel(logging.INFO)
 app = None
 
 
+def fetch_upstream_json(
+    path: str,
+    timeout: Optional[float] = None,
+    max_attempts: Optional[int] = None,
+    backoff_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    base_url = os.environ.get("CRE_UPSTREAM_API_URL", "https://opencre.org/rest/v1")
+    timeout = timeout or float(os.environ.get("CRE_UPSTREAM_TIMEOUT_SECONDS", "30"))
+    max_attempts = max_attempts or int(os.environ.get("CRE_UPSTREAM_MAX_ATTEMPTS", "4"))
+    backoff_seconds = backoff_seconds or float(
+        os.environ.get("CRE_UPSTREAM_RETRY_BACKOFF_SECONDS", "2")
+    )
+    url = f"{base_url}{path}"
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(url, timeout=timeout)
+            if response.status_code == 200:
+                return response.json()
+
+            status_error = RuntimeError(
+                f"cannot connect to upstream status code {response.status_code}"
+            )
+            # Retry only on transient upstream failures.
+            if response.status_code < 500 and response.status_code != 429:
+                raise status_error
+            last_error = status_error
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+
+        if attempt < max_attempts:
+            logger.warning(
+                "upstream fetch failed for %s on attempt %s/%s, retrying",
+                url,
+                attempt,
+                max_attempts,
+            )
+            time.sleep(backoff_seconds * attempt)
+
+    if last_error:
+        raise RuntimeError(f"upstream fetch failed for {url}") from last_error
+    raise RuntimeError(f"upstream fetch failed for {url}")
+
+
 def register_node(node: defs.Node, collection: db.Node_collection) -> db.Node:
     """
     for each link find if either the root node or the link have a CRE,
@@ -238,6 +283,8 @@ def register_standard(
 ):
     if os.environ.get("CRE_NO_GEN_EMBEDDINGS"):
         generate_embeddings = False
+    if os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS"):
+        calculate_gap_analysis = False
 
     if not standard_entries:
         logger.warning("register_standard() called with no standard_entries")
@@ -246,11 +293,11 @@ def register_standard(
     if collection is None:
         collection = db_connect(path=db_connection_str)
 
-    conn = redis.connect()
+    conn = redis.connect() if calculate_gap_analysis else None
     ph = prompt_client.PromptHandler(database=collection)
     importing_name = standard_entries[0].name
     standard_hash = gap_analysis.make_resources_key([importing_name])
-    if calculate_gap_analysis and conn.get(standard_hash):
+    if calculate_gap_analysis and conn and conn.get(standard_hash):
         logger.info(
             f"Standard importing job with info-hash {standard_hash} has already returned, skipping"
         )
@@ -273,7 +320,7 @@ def register_standard(
     if generate_embeddings and importing_name:
         ph.generate_embeddings_for(importing_name)
 
-    if calculate_gap_analysis and not os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS"):
+    if calculate_gap_analysis:
         # calculate gap analysis
         populate_neo4j_db(db_connection_str)
         jobs = []
@@ -466,15 +513,7 @@ def download_graph_from_upstream(cache: str) -> None:
     collection = db_connect(path=cache).with_graph()
 
     def download_cre_from_upstream(creid: str):
-        cre_response = requests.get(
-            os.environ.get("CRE_UPSTREAM_API_URL", "https://opencre.org/rest/v1")
-            + f"/id/{creid}"
-        )
-        if cre_response.status_code != 200:
-            raise RuntimeError(
-                f"cannot connect to upstream status code {cre_response.status_code}"
-            )
-        data = cre_response.json()
+        data = fetch_upstream_json(f"/id/{creid}")
         credict = data["data"]
         cre = defs.Document.from_dict(credict)
         if cre.id in imported_cres:
@@ -486,15 +525,7 @@ def download_graph_from_upstream(cache: str) -> None:
             if link.document.doctype == defs.Credoctypes.CRE:
                 download_cre_from_upstream(link.document.id)
 
-    root_cres_response = requests.get(
-        os.environ.get("CRE_UPSTREAM_API_URL", "https://opencre.org/rest/v1")
-        + "/root_cres"
-    )
-    if root_cres_response.status_code != 200:
-        raise RuntimeError(
-            f"cannot connect to upstream status code {root_cres_response.status_code}"
-        )
-    data = root_cres_response.json()
+    data = fetch_upstream_json("/root_cres")
     for root_cre in data["data"]:
         cre = defs.Document.from_dict(root_cre)
         register_cre(cre, collection)
@@ -624,6 +655,54 @@ def run(args: argparse.Namespace) -> None:  # pragma: no cover
 
         BaseParser().register_resource(
             secure_headers.SecureHeaders, db_connection_str=args.cache_file
+        )
+    if args.owasp_top10_2025_in:
+        from application.utils.external_project_parsers.parsers import owasp_top10_2025
+
+        BaseParser().register_resource(
+            owasp_top10_2025.OwaspTop10_2025, db_connection_str=args.cache_file
+        )
+    if args.owasp_api_top10_2023_in:
+        from application.utils.external_project_parsers.parsers import (
+            owasp_api_top10_2023,
+        )
+
+        BaseParser().register_resource(
+            owasp_api_top10_2023.OwaspApiTop10_2023,
+            db_connection_str=args.cache_file,
+        )
+    if args.owasp_kubernetes_top10_2022_in:
+        from application.utils.external_project_parsers.parsers import (
+            owasp_kubernetes_top10_2022,
+        )
+
+        BaseParser().register_resource(
+            owasp_kubernetes_top10_2022.OwaspKubernetesTop10_2022,
+            db_connection_str=args.cache_file,
+        )
+    if args.owasp_kubernetes_top10_2025_in:
+        from application.utils.external_project_parsers.parsers import (
+            owasp_kubernetes_top10_2025,
+        )
+
+        BaseParser().register_resource(
+            owasp_kubernetes_top10_2025.OwaspKubernetesTop10_2025,
+            db_connection_str=args.cache_file,
+        )
+    if args.owasp_llm_top10_2025_in:
+        from application.utils.external_project_parsers.parsers import (
+            owasp_llm_top10_2025,
+        )
+
+        BaseParser().register_resource(
+            owasp_llm_top10_2025.OwaspLlmTop10_2025,
+            db_connection_str=args.cache_file,
+        )
+    if args.owasp_aisvs_in:
+        from application.utils.external_project_parsers.parsers import owasp_aisvs
+
+        BaseParser().register_resource(
+            owasp_aisvs.OwaspAisvs, db_connection_str=args.cache_file
         )
     if args.pci_dss_4_in:
         from application.utils.external_project_parsers.parsers import pci_dss
