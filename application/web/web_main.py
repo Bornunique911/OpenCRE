@@ -124,6 +124,18 @@ SPECIALIZED_CHEATSHEET_GROUPS = {
         },
     },
 }
+AI_LLM_SECTION_CHEATSHEET_MATCHES = {
+    "LLM01": {"LLM Prompt Injection Prevention Cheat Sheet"},
+    "LLM02": {"AI Agent Security Cheat Sheet"},
+    "LLM03": {"Secure AI Model Ops Cheat Sheet"},
+    "LLM04": {"Secure AI Model Ops Cheat Sheet"},
+    "LLM05": set(),
+    "LLM06": {"AI Agent Security Cheat Sheet"},
+    "LLM07": {"AI Agent Security Cheat Sheet"},
+    "LLM08": {"AI Agent Security Cheat Sheet"},
+    "LLM09": set(),
+    "LLM10": set(),
+}
 
 
 class SupportedFormats(Enum):
@@ -344,6 +356,10 @@ def _build_direct_cre_overlap_map_analysis(
             if link.document.doctype != defs.Credoctypes.CRE:
                 continue
             for compare_node in compare_nodes_by_cre.get(link.document.id, []):
+                if not _is_allowed_specialized_cheatsheet_match(
+                    specialized_group, base_node, compare_node
+                ):
+                    continue
                 shared_paths.setdefault(
                     compare_node.id,
                     {
@@ -412,6 +428,26 @@ def _build_specialized_cheatsheet_section(
         "standards": standards,
         "result": result,
     }
+
+
+def _is_allowed_specialized_cheatsheet_match(
+    category: str | None, base_node: defs.Standard, compare_node: defs.Standard
+) -> bool:
+    if category != "AI / LLM Cheat Sheets":
+        return True
+
+    if base_node.name == LLM_TOP10_STANDARD_NAME and compare_node.name == OWASP_CHEATSHEETS_STANDARD_NAME:
+        allowed = AI_LLM_SECTION_CHEATSHEET_MATCHES.get(base_node.sectionID or "", set())
+        return compare_node.section in allowed
+
+    if (
+        base_node.name == OWASP_CHEATSHEETS_STANDARD_NAME
+        and compare_node.name == LLM_TOP10_STANDARD_NAME
+    ):
+        allowed = AI_LLM_SECTION_CHEATSHEET_MATCHES.get(compare_node.sectionID or "", set())
+        return base_node.section in allowed
+
+    return True
 
 
 def extend_cre_with_tag_links(
@@ -853,6 +889,13 @@ def fetch_job() -> Any:
                 if ga:
                     # logger.__delattr__("and results in cache")
                     ga = flask_json.loads(ga)
+                    specialized_cheatsheet_section = (
+                        _build_specialized_cheatsheet_section(standards, ga)
+                    )
+                    if specialized_cheatsheet_section:
+                        ga["specialized_cheatsheet_section"] = (
+                            specialized_cheatsheet_section
+                        )
                     if "result" in ga:
                         return jsonify(ga)
                     else:
