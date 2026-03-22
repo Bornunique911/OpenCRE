@@ -23,6 +23,7 @@ class TestOwaspLlmTop10_2025Parser(unittest.TestCase):
     def test_parse(self) -> None:
         for cre_id, name in [
             ("161-451", "Output encoding and injection prevention"),
+            ("064-808", "Encode output context-specifically"),
             ("760-764", "Injection protection"),
             ("623-550", "Denial Of Service protection"),
         ]:
@@ -39,5 +40,6 @@ class TestOwaspLlmTop10_2025Parser(unittest.TestCase):
         self.assertEqual(
             ["161-451", "760-764"], [l.document.id for l in entries[0].links]
         )
+        self.assertEqual(["064-808"], [l.document.id for l in entries[4].links])
         self.assertEqual("LLM10", entries[-1].sectionID)
         self.assertEqual(["623-550"], [l.document.id for l in entries[-1].links])

@@ -27,7 +27,7 @@
     "section_id": "LLM05",
     "section": "Improper Output Handling",
     "hyperlink": "https://genai.owasp.org/llmrisk/llm052025-improper-output-handling/",
-    "cre_ids": ["064-808", "161-451"]
+    "cre_ids": ["064-808"]
   },
   {
     "section_id": "LLM06",
