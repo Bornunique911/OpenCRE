@@ -93,6 +93,80 @@ As of the time this tracking note was prepared:
 That means local branch history is especially useful for reconstructing work in
 progress.
 
+## Issue and PR linkage summary
+
+This section answers a practical question directly:
+
+- which upstream issues or PRs were helped by the code changes on this branch
+
+### Primary upstream items
+
+- `#472` `Mapping: Map to the rest of CWE`
+  - reference:
+    `https://github.com/OWASP/OpenCRE/issues/472`
+  - status in this branch:
+    directly addressed
+  - main work:
+    CWE inheritance, curated fallback mappings, MITRE refresh tooling, broader
+    standard imports, and local verification
+
+- `#486` `Make smartlink go to CRE directly`
+  - reference:
+    `https://github.com/OWASP/OpenCRE/issues/486`
+  - status in this branch:
+    related context, not the direct implementation in the commits below
+  - main relevance:
+    explorer, routing, mapping, and linked-document cleanup happened in the
+    same working stream and are useful if smartlink behavior must be revisited
+
+- `#797` `fix: redirect smartlink directly to CRE when only one is linked`
+  - reference:
+    `https://github.com/OWASP/OpenCRE/pull/797`
+  - status in this branch:
+    upstream comparison point only
+  - main relevance:
+    nearby upstream implementation to compare against for smartlink-related
+    follow-up work
+
+### Mapping from implementation phases to issues and PRs
+
+- `Phase 1` to `Phase 6`
+  - primary upstream issue:
+    `#472`
+  - reason:
+    this is the core CWE mapping and refresh work
+
+- `Phase 7`
+  - primary upstream issue:
+    `#472`
+  - secondary relevance:
+    makes local and upstream verification of mapping work more reliable
+
+- `Phase 8` and `Phase 9`
+  - primary upstream issue:
+    `#472`
+  - reason:
+    expands standards and official references so mapping coverage is more
+    useful in practice
+
+- `Phase 10`
+  - primary upstream issue:
+    adjacent to `#486`
+  - secondary upstream issue:
+    supports `#472`
+  - reason:
+    explorer and discoverability changes help inspect and validate mappings,
+    while also touching the same navigation space as smartlink behavior
+
+- `Phase 11`
+  - primary upstream issue:
+    supports `#472`
+  - secondary upstream issue:
+    adjacent to `#486`
+  - reason:
+    map-analysis correctness and category-specific rendering improve the
+    usability of the new mappings and related navigation flows
+
 ## Conversation-order implementation timeline
 
 The branch history only tells part of the story. This section records the work
@@ -101,6 +175,10 @@ when some steps were local runtime changes, SQLite refreshes, or grouped later
 into broader source changes.
 
 ### Phase 1: CWE mapping foundation
+
+Linked upstream items:
+
+- issue `#472`
 
 - validated the original CWE importer behavior against the target use case from
   issue `#472`
@@ -116,6 +194,10 @@ Primary files involved:
 
 ### Phase 2: Local app bring-up and database population
 
+Linked upstream items:
+
+- issue `#472`
+
 - started the local Flask app
 - confirmed the initial local SQLite cache was effectively empty
 - loaded local standards data so CWE and CRE pages could be inspected in the UI
@@ -127,6 +209,10 @@ Primary files and scripts involved:
 - [run-local.sh](/home/born/Important_Stuff/OpenCRE/scripts/run-local.sh)
 
 ### Phase 3: Initial fallback mappings for missing CWE links
+
+Linked upstream items:
+
+- issue `#472`
 
 - added direct local fallback coverage for missing but high-confidence CWE
   families such as:
@@ -141,6 +227,10 @@ Primary files involved:
 
 ### Phase 4: Move CWE fallback logic into curated data
 
+Linked upstream items:
+
+- issue `#472`
+
 - moved ad hoc fallback matching out of parser logic and into a curated data
   file
 - made the parser load a reviewable JSON mapping file instead of burying the
@@ -154,6 +244,10 @@ Primary files involved:
 - [cwe_parser_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/cwe_parser_test.py)
 
 ### Phase 5: Expand high-confidence CWE families
+
+Linked upstream items:
+
+- issue `#472`
 
 - expanded fallback families for:
   - `authentication`
@@ -172,6 +266,10 @@ Primary files involved:
 
 ### Phase 6: Official MITRE CWE import and refresh tooling
 
+Linked upstream items:
+
+- issue `#472`
+
 - switched local verification to the official MITRE CWE XML source
 - added a reusable update script for refreshing the latest MITRE CWE release
 - added a DB stats helper script so import growth can be measured over time
@@ -182,6 +280,10 @@ Primary files and scripts involved:
 - [show-db-stats.sh](/home/born/Important_Stuff/OpenCRE/scripts/show-db-stats.sh)
 
 ### Phase 7: Upstream sync resilience and local/runtime fallbacks
+
+Linked upstream items:
+
+- issue `#472`
 
 - hardened `--upstream_sync` with request-level retries so transient upstream
   failures no longer abort the whole refresh
@@ -197,6 +299,10 @@ Primary files involved:
 - [web_main_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/web_main_test.py)
 
 ### Phase 8: Add OWASP Top 10 2025 and related standard families
+
+Linked upstream items:
+
+- issue `#472`
 
 - added curated importers and data files for:
   - `OWASP Top 10 2025`
@@ -223,6 +329,10 @@ Primary files involved:
 
 ### Phase 9: Fix official references and cheat-sheet sources
 
+Linked upstream items:
+
+- issue `#472`
+
 - normalized OWASP Cheat Sheet references to the official Cheat Sheet Series
   URLs
 - added supplemental cheat sheets used by newer AI and LLM categories
@@ -239,6 +349,12 @@ Primary files involved:
 
 ### Phase 10: Explorer and root standard discoverability
 
+Linked upstream items:
+
+- issue `#486` as adjacent context
+- issue `#472` as mapping validation support
+- PR `#797` as nearby upstream smartlink implementation context
+
 - refreshed explorer caching so new standards are visible more reliably
 - added `Expand all` and `Collapse all` controls to reduce perceived lag
 - extended `/rest/v1/root_cres` with a limited `featured_standards` section for:
@@ -254,6 +370,11 @@ Primary files involved:
 - [web_main.py](/home/born/Important_Stuff/OpenCRE/application/web/web_main.py)
 
 ### Phase 11: Map analysis specialization and correctness clean-up
+
+Linked upstream items:
+
+- issue `#472`
+- issue `#486` as adjacent routing and UX context
 
 - fixed backend `500` paths for local `map_analysis`
 - normalized aliases like `OWASP Top 2025` to `OWASP Top 10 2025`
@@ -285,6 +406,8 @@ split into focused PRs.
 
 - `2ce9fbc`
 - `Tighten LLM Top 10 prompt injection mappings`
+- linked upstream items:
+  - issue `#472`
 
 Purpose:
 
@@ -300,6 +423,9 @@ Primary files:
 
 - `b8e6951`
 - `Refine specialized cheat sheet map analysis`
+- linked upstream items:
+  - issue `#472`
+  - issue `#486` as adjacent UX and navigation context
 
 Purpose:
 
@@ -316,6 +442,8 @@ Primary files:
 
 - `575b940`
 - `Improve cheat sheet labels in gap analysis`
+- linked upstream items:
+  - issue `#472`
 
 Purpose:
 
