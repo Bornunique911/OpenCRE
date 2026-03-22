@@ -93,6 +93,189 @@ As of the time this tracking note was prepared:
 That means local branch history is especially useful for reconstructing work in
 progress.
 
+## Conversation-order implementation timeline
+
+The branch history only tells part of the story. This section records the work
+in roughly the same order it happened during the implementation session, even
+when some steps were local runtime changes, SQLite refreshes, or grouped later
+into broader source changes.
+
+### Phase 1: CWE mapping foundation
+
+- validated the original CWE importer behavior against the target use case from
+  issue `#472`
+- extended CWE import logic to inherit CRE links through related CWE nodes
+- added regression coverage for transitive CWE mapping cases
+- verified locally that child CWE entries could inherit from broader injection
+  mappings during the same import run
+
+Primary files involved:
+
+- [cwe.py](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/parsers/cwe.py)
+- [cwe_parser_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/cwe_parser_test.py)
+
+### Phase 2: Local app bring-up and database population
+
+- started the local Flask app
+- confirmed the initial local SQLite cache was effectively empty
+- loaded local standards data so CWE and CRE pages could be inspected in the UI
+- verified early live examples for `CWE-89`, `CWE-120`, and related pages
+
+Primary files and scripts involved:
+
+- [cre.py](/home/born/Important_Stuff/OpenCRE/cre.py)
+- [run-local.sh](/home/born/Important_Stuff/OpenCRE/scripts/run-local.sh)
+
+### Phase 3: Initial fallback mappings for missing CWE links
+
+- added direct local fallback coverage for missing but high-confidence CWE
+  families such as:
+  - injection
+  - XXE
+  - authorization and access control
+- confirmed examples like `CWE-611` and `CWE-612` in the live app
+
+Primary files involved:
+
+- [cwe.py](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/parsers/cwe.py)
+
+### Phase 4: Move CWE fallback logic into curated data
+
+- moved ad hoc fallback matching out of parser logic and into a curated data
+  file
+- made the parser load a reviewable JSON mapping file instead of burying the
+  rules entirely in code
+- kept regression tests green after the refactor
+
+Primary files involved:
+
+- [cwe_fallback_mappings.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/cwe_fallback_mappings.json)
+- [cwe.py](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/parsers/cwe.py)
+- [cwe_parser_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/cwe_parser_test.py)
+
+### Phase 5: Expand high-confidence CWE families
+
+- expanded fallback families for:
+  - `authentication`
+  - `CSRF`
+  - `SSRF`
+  - hard-coded secrets and credential storage
+  - deserialization
+  - redirect
+  - session and additional authn/authz variants
+- updated the local SQLite database and rechecked linked coverage
+
+Primary files involved:
+
+- [cwe_fallback_mappings.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/cwe_fallback_mappings.json)
+- [cwe.py](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/parsers/cwe.py)
+
+### Phase 6: Official MITRE CWE import and refresh tooling
+
+- switched local verification to the official MITRE CWE XML source
+- added a reusable update script for refreshing the latest MITRE CWE release
+- added a DB stats helper script so import growth can be measured over time
+
+Primary files and scripts involved:
+
+- [update-cwe.sh](/home/born/Important_Stuff/OpenCRE/scripts/update-cwe.sh)
+- [show-db-stats.sh](/home/born/Important_Stuff/OpenCRE/scripts/show-db-stats.sh)
+
+### Phase 7: Upstream sync resilience and local/runtime fallbacks
+
+- hardened `--upstream_sync` with request-level retries so transient upstream
+  failures no longer abort the whole refresh
+- added local SQLite-backed fallback logic for `map_analysis` when Redis and
+  Neo4j are unavailable
+- reduced long waits by using faster fallback timeout settings for web requests
+
+Primary files involved:
+
+- [cre_main.py](/home/born/Important_Stuff/OpenCRE/application/cmd/cre_main.py)
+- [web_main.py](/home/born/Important_Stuff/OpenCRE/application/web/web_main.py)
+- [cre_main_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/cre_main_test.py)
+- [web_main_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/web_main_test.py)
+
+### Phase 8: Add OWASP Top 10 2025 and related standard families
+
+- added curated importers and data files for:
+  - `OWASP Top 10 2025`
+  - `OWASP API Security Top 10 2023`
+  - `OWASP Top 10 for LLM and Gen AI Apps 2025`
+  - `OWASP Kubernetes Top Ten 2022`
+  - `OWASP Kubernetes Top Ten 2025 (Draft)`
+  - `OWASP AI Security Verification Standard (AISVS)`
+- added update scripts to reimport these standards in local development
+- added Kubernetes fallback behavior:
+  - prefer `2025` where usable
+  - reuse `2022` mapping only when needed
+
+Primary files involved:
+
+- [owasp_top10_2025.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_top10_2025.json)
+- [owasp_api_top10_2023.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_api_top10_2023.json)
+- [owasp_llm_top10_2025.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_llm_top10_2025.json)
+- [owasp_kubernetes_top10_2022.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_kubernetes_top10_2022.json)
+- [owasp_kubernetes_top10_2025.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_kubernetes_top10_2025.json)
+- [owasp_aisvs_1_0.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_aisvs_1_0.json)
+- [update-owasp-top10-2025-mappings.sh](/home/born/Important_Stuff/OpenCRE/scripts/update-owasp-top10-2025-mappings.sh)
+- [update-owasp-top10-standards.sh](/home/born/Important_Stuff/OpenCRE/scripts/update-owasp-top10-standards.sh)
+
+### Phase 9: Fix official references and cheat-sheet sources
+
+- normalized OWASP Cheat Sheet references to the official Cheat Sheet Series
+  URLs
+- added supplemental cheat sheets used by newer AI and LLM categories
+- corrected LLM Top 10 risk links to the official per-risk OWASP GenAI URLs
+- aligned AISVS section links to the actual `1.0/en` source locations
+
+Primary files involved:
+
+- [cheatsheets_parser.py](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/parsers/cheatsheets_parser.py)
+- [owasp_cheatsheets_supplement.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_cheatsheets_supplement.json)
+- [owasp_llm_top10_2025.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_llm_top10_2025.json)
+- [owasp_aisvs_1_0.json](/home/born/Important_Stuff/OpenCRE/application/utils/external_project_parsers/data/owasp_aisvs_1_0.json)
+- [update-cheatsheets.sh](/home/born/Important_Stuff/OpenCRE/scripts/update-cheatsheets.sh)
+
+### Phase 10: Explorer and root standard discoverability
+
+- refreshed explorer caching so new standards are visible more reliably
+- added `Expand all` and `Collapse all` controls to reduce perceived lag
+- extended `/rest/v1/root_cres` with a limited `featured_standards` section for:
+  - `AI`
+  - `API`
+  - `Cloud`
+
+Primary files involved:
+
+- [DataProvider.tsx](/home/born/Important_Stuff/OpenCRE/application/frontend/src/providers/DataProvider.tsx)
+- [explorer.tsx](/home/born/Important_Stuff/OpenCRE/application/frontend/src/pages/Explorer/explorer.tsx)
+- [explorer.scss](/home/born/Important_Stuff/OpenCRE/application/frontend/src/pages/Explorer/explorer.scss)
+- [web_main.py](/home/born/Important_Stuff/OpenCRE/application/web/web_main.py)
+
+### Phase 11: Map analysis specialization and correctness clean-up
+
+- fixed backend `500` paths for local `map_analysis`
+- normalized aliases like `OWASP Top 2025` to `OWASP Top 10 2025`
+- added an explicit `OWASP Top 10 2021` vs `OWASP Top 10 2025` comparison
+  section
+- added category-specific cheat-sheet sections for:
+  - `AI / LLM`
+  - `API`
+  - `Cloud`
+- filtered generic cheat-sheet noise out of LLM comparisons
+- reattached specialized cheat-sheet sections on async job completion
+- refined the frontend labels to distinguish `AI`, `API`, `Cloud`, and `Web`
+  cheat sheets in a clearer way
+
+Primary files involved:
+
+- [web_main.py](/home/born/Important_Stuff/OpenCRE/application/web/web_main.py)
+- [web_main_test.py](/home/born/Important_Stuff/OpenCRE/application/tests/web_main_test.py)
+- [GapAnalysis.tsx](/home/born/Important_Stuff/OpenCRE/application/frontend/src/pages/GapAnalysis/GapAnalysis.tsx)
+- [GapAnalysis.scss](/home/born/Important_Stuff/OpenCRE/application/frontend/src/pages/GapAnalysis/GapAnalysis.scss)
+- [types.ts](/home/born/Important_Stuff/OpenCRE/application/frontend/src/types.ts)
+
 ## Local commit timeline
 
 The commits below were created in a deliberate order so they can be reused or
