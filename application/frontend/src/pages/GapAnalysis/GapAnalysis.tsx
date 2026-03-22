@@ -70,7 +70,38 @@ const GetStrengthColor = (score) => {
   return 'Orange';
 };
 
-const GetResultLine = (path, gapAnalysis, key) => {
+const CHEATSHEET_CATEGORY_LABELS = {
+  'LLM Prompt Injection Prevention Cheat Sheet': 'AI',
+  'AI Agent Security Cheat Sheet': 'AI',
+  'Secure AI Model Ops Cheat Sheet': 'AI',
+  'REST Security Cheat Sheet': 'API',
+  'Authorization Cheat Sheet': 'API',
+  'Server Side Request Forgery Prevention Cheat Sheet': 'API',
+  'Web Service Security Cheat Sheet': 'API',
+  'Docker Security Cheat Sheet': 'Cloud',
+  'Kubernetes Security Cheat Sheet': 'Cloud',
+  'Secure Cloud Architecture Cheat Sheet': 'Cloud',
+};
+
+const formatCheatsheetLabel = (document, specializedCategory?: string) => {
+  if (document?.name !== 'OWASP Cheat Sheets') {
+    return getDocumentDisplayName(document, true);
+  }
+
+  const category =
+    CHEATSHEET_CATEGORY_LABELS[document.section] ??
+    (specializedCategory?.includes('AI')
+      ? 'AI'
+      : specializedCategory?.includes('API')
+      ? 'API'
+      : specializedCategory?.includes('Cloud')
+      ? 'Cloud'
+      : 'Web');
+
+  return `${category} Cheat Sheet: ${document.section}`;
+};
+
+const GetResultLine = (path, gapAnalysis, key, specializedCategory?: string) => {
   let segmentID = gapAnalysis[key].start.id;
   return (
     <div key={path.end.id} style={{ marginBottom: '.25em', fontWeight: 'bold' }}>
@@ -81,7 +112,7 @@ const GetResultLine = (path, gapAnalysis, key) => {
           style={{ textAlign: 'center' }}
           hoverable
           position="right center"
-          trigger={<span>{getDocumentDisplayName(path.end, true)} </span>}
+          trigger={<span>{formatCheatsheetLabel(path.end, specializedCategory)} </span>}
         >
           <Popup.Content>
             {getDocumentDisplayName(gapAnalysis[key].start, true)}
@@ -175,6 +206,7 @@ export const GapAnalysis = () => {
         if (result.data.result) {
           setLoadingGA(false);
           setGapAnalysis(result.data.result);
+          setSpecializedCheatsheetSection(result.data.specialized_cheatsheet_section);
           setgaJob('');
         }
       };
@@ -384,12 +416,24 @@ export const GapAnalysis = () => {
                     <Table.Cell style={{ minWidth: '35vw' }}>
                       {Object.values<any>(specializedCheatsheetSection.result[key].paths)
                         .sort((a, b) => a.score - b.score)
-                        .map((path) => GetResultLine(path, specializedCheatsheetSection.result, key))}
+                        .map((path) =>
+                          GetResultLine(
+                            path,
+                            specializedCheatsheetSection.result,
+                            key,
+                            specializedCheatsheetSection.category
+                          )
+                        )}
                       {specializedCheatsheetSection.result[key].weakLinks &&
                         Object.values<any>(specializedCheatsheetSection.result[key].weakLinks)
                           .sort((a, b) => a.score - b.score)
                           .map((path) =>
-                            GetResultLine(path, specializedCheatsheetSection.result, key)
+                            GetResultLine(
+                              path,
+                              specializedCheatsheetSection.result,
+                              key,
+                              specializedCheatsheetSection.category
+                            )
                           )}
                       {Object.keys(specializedCheatsheetSection.result[key].paths).length === 0 &&
                         specializedCheatsheetSection.result[key].extra === 0 && <i>No links Found</i>}
