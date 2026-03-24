@@ -47,6 +47,13 @@ import google.auth.transport.requests
 
 
 ITEMS_PER_PAGE = 20
+OWASP_TOP10_2025_DATA_FILE = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "utils"
+    / "external_project_parsers"
+    / "data"
+    / "owasp_top10_2025.json"
+)
 
 app = Blueprint(
     "web",
@@ -59,6 +66,32 @@ app = Blueprint(
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+STANDARD_NAME_ALIASES = {
+    "owasp top 2025": "OWASP Top 10 2025",
+}
+
+ROOT_CRES_FEATURED_STANDARDS = {
+    "AI": [
+        "OWASP Top 10 for LLM and Gen AI Apps 2025",
+        "OWASP AI Security Verification Standard (AISVS)",
+    ],
+    "API": [
+        "OWASP API Security Top 10 2023",
+    ],
+    "Cloud": [
+        "Cloud Controls Matrix",
+        "OWASP Kubernetes Top Ten 2025 (Draft)",
+    ],
+}
+ROOT_CRES_FEATURED_STANDARD_LIMIT = 2
+LLM_TOP10_STANDARD_NAME = "OWASP Top 10 for LLM and Gen AI Apps 2025"
+AISVS_STANDARD_NAME = "OWASP AI Security Verification Standard (AISVS)"
+API_TOP10_STANDARD_NAME = "OWASP API Security Top 10 2023"
+CCM_STANDARD_NAME = "Cloud Controls Matrix"
+KUBERNETES_TOP10_2025_STANDARD_NAME = "OWASP Kubernetes Top Ten 2025 (Draft)"
+KUBERNETES_TOP10_2022_STANDARD_NAME = "OWASP Kubernetes Top Ten 2022"
+OWASP_CHEATSHEETS_STANDARD_NAME = "OWASP Cheat Sheets"
 
 
 def _ga_timeout_seconds() -> int:
@@ -88,6 +121,244 @@ class SupportedFormats(Enum):
     YAML = "yaml"
     OSCAL = "oscal"
 
+def _normalize_source_name(source: Any) -> str | None:
+    """
+    Normalize integration source names so analytics aggregation stays stable.
+    """
+    if source is None:
+        return None
+
+    normalized_source = str(source).strip().lower()
+    if not normalized_source:
+        return None
+
+    normalized_source = normalized_source.replace(" ", "-")
+    normalized_source = re.sub(r"[^a-z0-9._:-]", "-", normalized_source)
+    normalized_source = re.sub(r"-{2,}", "-", normalized_source).strip("-")
+    if not normalized_source:
+        return None
+
+    return normalized_source[:64]
+
+
+def _load_owasp_top10_2025_entries() -> list[dict[str, str]]:
+    with OWASP_TOP10_2025_DATA_FILE.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _normalize_standard_name(standard: str) -> str:
+    normalized_standard = str(standard).strip()
+    return STANDARD_NAME_ALIASES.get(normalized_standard.lower(), normalized_standard)
+
+
+def _build_owasp_top10_comparison(
+    standards: list[str], collection: db.Node_collection
+) -> dict[str, Any] | None:
+    requested = {str(standard).strip().lower() for standard in standards}
+    if requested != {"owasp top 10 2021", "owasp top 10 2025"}:
+        return None
+
+    top10_2021 = sorted(
+        collection.get_nodes(name="OWASP Top 10 2021"),
+        key=lambda node: node.sectionID or "",
+    )
+    if not top10_2021:
+        return None
+
+    top10_2025_nodes = sorted(
+        collection.get_nodes(name="OWASP Top 10 2025"),
+        key=lambda node: node.sectionID or "",
+    )
+    if top10_2025_nodes:
+        top10_2025 = [
+            {
+                "section_id": node.sectionID or "",
+                "section": node.section or "",
+                "hyperlink": node.hyperlink or "",
+            }
+            for node in top10_2025_nodes
+        ]
+    else:
+        top10_2025 = _load_owasp_top10_2025_entries()
+
+    top10_2021_by_rank = {
+        node.sectionID
+        or "": {
+            "section_id": node.sectionID or "",
+            "section": node.section or "",
+            "hyperlink": node.hyperlink or "",
+        }
+        for node in top10_2021
+    }
+    top10_2025_by_rank = {
+        entry["section_id"]: entry for entry in top10_2025 if entry.get("section_id")
+    }
+    ranks = sorted(set(top10_2021_by_rank.keys()) | set(top10_2025_by_rank.keys()))
+    comparison = []
+    for rank in ranks:
+        item_2021 = top10_2021_by_rank.get(rank)
+        item_2025 = top10_2025_by_rank.get(rank)
+        comparison.append(
+            {
+                "rank": rank,
+                "top10_2021": item_2021,
+                "top10_2025": item_2025,
+                "changed": (item_2021 or {}).get("section")
+                != (item_2025 or {}).get("section"),
+            }
+        )
+
+    return {
+        "standards": ["OWASP Top 10 2021", "OWASP Top 10 2025"],
+        "items": comparison,
+    }
+
+
+def _build_root_cres_featured_standards(
+    collection: db.Node_collection,
+) -> dict[str, list[dict[str, Any]]]:
+    featured: dict[str, list[dict[str, Any]]] = {}
+
+    for category, standard_names in ROOT_CRES_FEATURED_STANDARDS.items():
+        category_entries: list[dict[str, Any]] = []
+        for standard_name in standard_names[:ROOT_CRES_FEATURED_STANDARD_LIMIT]:
+            nodes = sorted(
+                collection.get_nodes(name=standard_name),
+                key=lambda node: (
+                    node.sectionID or "",
+                    node.section or "",
+                    node.id or "",
+                ),
+            )
+            if not nodes:
+                continue
+            category_entries.append(nodes[0].todict())
+
+        if category_entries:
+            featured[category] = category_entries
+
+    return featured
+
+
+def _fetch_upstream_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    encoded_standards = "&".join(
+        f"standard={urllib.parse.quote(str(standard), safe='')}"
+        for standard in standards
+    )
+    timeout = float(os.environ.get("CRE_WEB_UPSTREAM_TIMEOUT_SECONDS", "5"))
+    max_attempts = int(os.environ.get("CRE_WEB_UPSTREAM_MAX_ATTEMPTS", "1"))
+    backoff_seconds = float(
+        os.environ.get("CRE_WEB_UPSTREAM_RETRY_BACKOFF_SECONDS", "0.5")
+    )
+    try:
+        result = cre_main.fetch_upstream_json(
+            f"/map_analysis?{encoded_standards}",
+            timeout=timeout,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unable to fetch upstream map analysis for %s: %s",
+            standards_hash,
+            exc,
+        )
+        return None
+
+    if not isinstance(result, dict):
+        return None
+
+    if result.get("result"):
+        try:
+            collection.add_gap_analysis_result(
+                cache_key=standards_hash, ga_object=flask_json.dumps(result)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unable to cache upstream map analysis for %s: %s",
+                standards_hash,
+                exc,
+            )
+    return result
+
+
+def _build_direct_cre_overlap_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    base_nodes = collection.get_nodes(name=standards[0])
+    compare_nodes = collection.get_nodes(name=standards[1])
+    if not base_nodes or not compare_nodes:
+        return None
+
+    if not base_nodes or not compare_nodes:
+        return None
+
+    compare_nodes_by_cre: dict[str, list[defs.Standard]] = {}
+    for compare_node in compare_nodes:
+        for link in compare_node.links:
+            if link.document.doctype != defs.Credoctypes.CRE:
+                continue
+            compare_nodes_by_cre.setdefault(link.document.id, []).append(compare_node)
+
+    grouped_paths: dict[str, dict[str, Any]] = {}
+    for base_node in base_nodes:
+        shared_paths: dict[str, Any] = {}
+        for link in base_node.links:
+            if link.document.doctype != defs.Credoctypes.CRE:
+                continue
+            for compare_node in compare_nodes_by_cre.get(link.document.id, []):
+                shared_paths.setdefault(
+                    compare_node.id,
+                    {
+                        "end": compare_node.shallow_copy(),
+                        "path": [
+                            {
+                                "start": base_node.shallow_copy(),
+                                "end": link.document.shallow_copy(),
+                                "relationship": "LINKED_TO",
+                                "score": 0,
+                            },
+                            {
+                                "start": link.document.shallow_copy(),
+                                "end": compare_node.shallow_copy(),
+                                "relationship": "LINKED_TO",
+                                "score": 0,
+                            },
+                        ],
+                        "score": 0,
+                    },
+                )
+
+        grouped_paths[base_node.id] = {
+            "start": base_node.shallow_copy(),
+            "paths": shared_paths,
+            "extra": 0,
+        }
+
+    result = {"result": grouped_paths}
+    try:
+        collection.add_gap_analysis_result(
+            cache_key=standards_hash, ga_object=flask_json.dumps(result)
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unable to cache direct CRE-overlap map analysis for %s: %s",
+            standards_hash,
+            exc,
+        )
+    return result
 
 def extend_cre_with_tag_links(
     cre: defs.CRE, collection: db.Node_collection
@@ -298,73 +569,113 @@ def find_document_by_tag() -> Any:
 
 @app.route("/rest/v1/map_analysis", methods=["GET"])
 def map_analysis() -> Any:
-    standards = request.args.getlist("standard")
+    standards = [_normalize_standard_name(s) for s in request.args.getlist("standard")]
     if posthog:
         posthog.capture(f"map_analysis", f"standards:{standards}")
 
     database = db.Node_collection()
-    if len(standards) < 2:
-        abort(400, "Please provide two standards")
-    standards = standards[:2]
-    cache_key = gap_analysis.make_resources_key(standards)
-    cached = database.get_gap_analysis_result(cache_key=cache_key)
-    if cached:
-        parsed = json.loads(cached)
-        if parsed.get("result"):
-            return jsonify({"result": parsed.get("result")})
-    if os.environ.get("HEROKU"):
-        abort(404, "No such Cache")
+    standards_hash = gap_analysis.make_resources_key(standards)
+    owasp_top10_comparison = _build_owasp_top10_comparison(standards, database)
 
-    db_url = os.environ.get("CRE_CACHE_FILE") or os.environ.get("PROD_DATABASE_URL")
-    if not db_url:
-        # Derive from current SQLAlchemy bind when not explicitly set.
-        db_url = str(getattr(getattr(database.session, "bind", None), "url", ""))
-    try:
-        conn = redis.connect()
-        ga_queue_name = os.environ.get("CRE_GA_QUEUE_NAME", "ga")
-        q = Queue(name=ga_queue_name, connection=conn)
-        inflight_key = f"ga:inflight:{cache_key}"
-        inflight_job_id_raw = conn.get(inflight_key)
-        inflight_job_id = (
-            inflight_job_id_raw.decode("utf-8")
-            if isinstance(inflight_job_id_raw, bytes)
-            else str(inflight_job_id_raw) if inflight_job_id_raw else ""
-        )
-        if inflight_job_id:
-            try:
-                inflight_job = job.Job.fetch(id=inflight_job_id, connection=conn)
-                if inflight_job.get_status() in (
-                    job.JobStatus.QUEUED,
-                    job.JobStatus.STARTED,
-                ):
-                    return jsonify({"job_id": inflight_job_id})
-            except exceptions.NoSuchJobError:
-                conn.delete(inflight_key)
+    # First, check if we have cached results in the database
+    if database.gap_analysis_exists(standards_hash):
+        gap_analysis_result = database.get_gap_analysis_result(standards_hash)
+        if gap_analysis_result:
+            result = flask_json.loads(gap_analysis_result)
+            if owasp_top10_comparison:
+                result["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(result)
 
-        j = q.enqueue_call(
-            description=f"{standards[0]}->{standards[1]}",
-            func=cre_main.run_gap_pair_job,
-            kwargs={
-                "importing_name": standards[0],
-                "peer_name": standards[1],
-                "db_connection_str": db_url,
-            },
-            timeout=gap_analysis.GAP_ANALYSIS_TIMEOUT,
-        )
-        conn.set(inflight_key, str(j.id))
-        conn.expire(inflight_key, _ga_timeout_seconds())
-        return jsonify({"job_id": str(j.id)})
-    except Exception as exc:
-        logger.warning(
-            "Redis/RQ unavailable in map_analysis for %s; using synchronous fallback: %s",
-            cache_key,
-            exc,
-        )
+    # On Heroku (read-only), check if standards exist before attempting Redis/queue operations
+    is_heroku = os.environ.get("DYNO") is not None
+    if is_heroku:
+        # Check if all requested standards exist
         try:
-            return jsonify(_compute_ga_without_redis(database, standards))
-        except Exception as fallback_exc:
-            logger.exception("Synchronous GA fallback failed for %s", cache_key)
-            abort(503, f"Gap analysis unavailable: {fallback_exc}")
+            existing_standards = database.standards()
+            if isinstance(existing_standards, (list, tuple, set)):
+                existing_lower = {str(s).lower() for s in existing_standards}
+                missing = [s for s in standards if str(s).lower() not in existing_lower]
+                if missing:
+                    logger.info(
+                        f"On Heroku: gap analysis request {standards_hash} references "
+                        f"standards that do not exist: {', '.join(missing)}, returning 404"
+                    )
+                    abort(
+                        404, f"One or more standards do not exist: {', '.join(missing)}"
+                    )
+        except Exception as exc:
+            # If we can't verify standards, log but don't fail (defensive)
+            logger.warning(f"Could not verify standards existence on Heroku: {exc}")
+
+    # If calculations are disabled, return 404
+    if os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS"):
+        logger.info(
+            f"Gap analysis calculations are disabled by CRE_NO_CALCULATE_GAP_ANALYSIS; "
+            f"refusing to schedule new job for {standards_hash}"
+        )
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
+        abort(404, "Gap analysis calculations are disabled")
+
+    # Now call schedule() which will handle Redis/queue operations
+    try:
+        gap_analysis_dict = gap_analysis.schedule(standards, database)
+    except Exception as exc:
+        logger.error(f"Gap analysis scheduling failed for {standards_hash}: {exc}")
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
+        raise
+    if owasp_top10_comparison:
+        gap_analysis_dict["owasp_top10_comparison"] = owasp_top10_comparison
+    if "result" in gap_analysis_dict:
+        return jsonify(gap_analysis_dict)
+    if gap_analysis_dict.get("error"):
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
+        abort(404)
+    return jsonify({"job_id": gap_analysis_dict.get("job_id")})
 
 
 @app.route("/rest/v1/map_analysis_weak_links", methods=["GET"])
@@ -549,6 +860,9 @@ def find_root_cres() -> Any:
     if documents:
         res = [doc.todict() for doc in documents]
         result = {"data": res}
+        featured_standards = _build_root_cres_featured_standards(database)
+        if featured_standards:
+            result["featured_standards"] = featured_standards
         # if opt_osib:
         #     result["osib"] = odefs.cre2osib(documents).todict()
         if opt_format == SupportedFormats.Markdown.value:
