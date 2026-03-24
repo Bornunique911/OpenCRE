@@ -427,34 +427,59 @@ def map_analysis() -> Any:
         posthog.capture(f"map_analysis", f"standards:{standards}")
 
     database = db.Node_collection()
-    if len(standards) < 2:
-        abort(400, "Please provide two standards")
-    standards = standards[:2]
-    cache_key = gap_analysis.make_resources_key(standards)
-    cached = database.get_gap_analysis_result(cache_key=cache_key)
-    if cached:
-        parsed = json.loads(cached)
-        if parsed.get("result"):
-            return jsonify({"result": parsed.get("result")})
+    standards = request.args.getlist("standard")
+    standards_hash = gap_analysis.make_resources_key(standards)
 
-    conn = redis.connect()
-    ga_queue_name = os.environ.get("CRE_GA_QUEUE_NAME", "ga")
-    q = Queue(name=ga_queue_name, connection=conn)
-    db_url = os.environ.get("CRE_CACHE_FILE") or os.environ.get("PROD_DATABASE_URL")
-    if not db_url:
-        # Derive from current SQLAlchemy bind when not explicitly set.
-        db_url = str(getattr(getattr(database.session, "bind", None), "url", ""))
-    j = q.enqueue_call(
-        description=f"{standards[0]}->{standards[1]}",
-        func=cre_main.run_gap_pair_job,
-        kwargs={
-            "importing_name": standards[0],
-            "peer_name": standards[1],
-            "db_connection_str": db_url,
-        },
-        timeout=gap_analysis.GAP_ANALYSIS_TIMEOUT,
-    )
-    return jsonify({"job_id": str(j.id)})
+    if OPENCRE_STANDARD_NAME in standards:
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            return jsonify(direct_gap_analysis)
+        abort(404, "No direct overlap found for requested standards")
+
+    # First, check if we have cached results in the database
+    if database.gap_analysis_exists(standards_hash):
+        gap_analysis_result = database.get_gap_analysis_result(standards_hash)
+        if gap_analysis_result:
+            return jsonify(flask_json.loads(gap_analysis_result))
+
+    # On Heroku (read-only), check if standards exist before attempting Redis/queue operations
+    is_heroku = os.environ.get("DYNO") is not None
+    if is_heroku:
+        # Check if all requested standards exist
+        try:
+            existing_standards = database.standards()
+            if isinstance(existing_standards, (list, tuple, set)):
+                existing_lower = {str(s).lower() for s in existing_standards}
+                missing = [s for s in standards if str(s).lower() not in existing_lower]
+                if missing:
+                    logger.info(
+                        f"On Heroku: gap analysis request {standards_hash} references "
+                        f"standards that do not exist: {', '.join(missing)}, returning 404"
+                    )
+                    abort(
+                        404, f"One or more standards do not exist: {', '.join(missing)}"
+                    )
+        except Exception as exc:
+            # If we can't verify standards, log but don't fail (defensive)
+            logger.warning(f"Could not verify standards existence on Heroku: {exc}")
+
+    # If calculations are disabled, return 404
+    if os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS"):
+        logger.info(
+            f"Gap analysis calculations are disabled by CRE_NO_CALCULATE_GAP_ANALYSIS; "
+            f"refusing to schedule new job for {standards_hash}"
+        )
+        abort(404, "Gap analysis calculations are disabled")
+
+    # Now call schedule() which will handle Redis/queue operations
+    gap_analysis_dict = gap_analysis.schedule(standards, database)
+    if "result" in gap_analysis_dict:
+        return jsonify(gap_analysis_dict)
+    if gap_analysis_dict.get("error"):
+        abort(404)
+    return jsonify({"job_id": gap_analysis_dict.get("job_id")})
 
 
 @app.route("/rest/v1/map_analysis_weak_links", methods=["GET"])
