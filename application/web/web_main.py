@@ -94,6 +94,49 @@ CCM_STANDARD_NAME = "Cloud Controls Matrix"
 KUBERNETES_TOP10_2025_STANDARD_NAME = "OWASP Kubernetes Top Ten 2025 (Draft)"
 KUBERNETES_TOP10_2022_STANDARD_NAME = "OWASP Kubernetes Top Ten 2022"
 OWASP_CHEATSHEETS_STANDARD_NAME = "OWASP Cheat Sheets"
+SPECIALIZED_CHEATSHEET_GROUPS = {
+    "AI / LLM Cheat Sheets": {
+        "standards": {LLM_TOP10_STANDARD_NAME, AISVS_STANDARD_NAME},
+        "sections": {
+            "LLM Prompt Injection Prevention Cheat Sheet",
+            "AI Agent Security Cheat Sheet",
+            "Secure AI Model Ops Cheat Sheet",
+        },
+    },
+    "API Cheat Sheets": {
+        "standards": {API_TOP10_STANDARD_NAME},
+        "sections": {
+            "REST Security Cheat Sheet",
+            "Authorization Cheat Sheet",
+            "Server Side Request Forgery Prevention Cheat Sheet",
+            "Web Service Security Cheat Sheet",
+        },
+    },
+    "Cloud Cheat Sheets": {
+        "standards": {
+            CCM_STANDARD_NAME,
+            KUBERNETES_TOP10_2025_STANDARD_NAME,
+            KUBERNETES_TOP10_2022_STANDARD_NAME,
+        },
+        "sections": {
+            "Docker Security Cheat Sheet",
+            "Kubernetes Security Cheat Sheet",
+            "Secure Cloud Architecture Cheat Sheet",
+        },
+    },
+}
+AI_LLM_SECTION_CHEATSHEET_MATCHES = {
+    "LLM01": {"LLM Prompt Injection Prevention Cheat Sheet"},
+    "LLM02": {"AI Agent Security Cheat Sheet"},
+    "LLM03": {"Secure AI Model Ops Cheat Sheet"},
+    "LLM04": {"Secure AI Model Ops Cheat Sheet"},
+    "LLM05": set(),
+    "LLM06": {"AI Agent Security Cheat Sheet"},
+    "LLM07": {"AI Agent Security Cheat Sheet"},
+    "LLM08": {"AI Agent Security Cheat Sheet"},
+    "LLM09": set(),
+    "LLM10": set(),
+}
 
 
 class SupportedFormats(Enum):
@@ -393,6 +436,18 @@ def _build_direct_cre_overlap_map_analysis(
     if not base_nodes or not compare_nodes:
         return None
 
+    specialized_group = _get_specialized_cheatsheet_group(standards)
+    if specialized_group:
+        allowed_sections = SPECIALIZED_CHEATSHEET_GROUPS[specialized_group]["sections"]
+        if standards[1] == OWASP_CHEATSHEETS_STANDARD_NAME:
+            compare_nodes = [
+                node for node in compare_nodes if node.section in allowed_sections
+            ]
+        elif standards[0] == OWASP_CHEATSHEETS_STANDARD_NAME:
+            base_nodes = [
+                node for node in base_nodes if node.section in allowed_sections
+            ]
+
     if not base_nodes or not compare_nodes:
         return None
 
@@ -410,6 +465,10 @@ def _build_direct_cre_overlap_map_analysis(
             if link.document.doctype != defs.Credoctypes.CRE:
                 continue
             for compare_node in compare_nodes_by_cre.get(link.document.id, []):
+                if not _is_allowed_specialized_cheatsheet_match(
+                    specialized_group, base_node, compare_node
+                ):
+                    continue
                 shared_paths.setdefault(
                     compare_node.id,
                     {
@@ -450,6 +509,54 @@ def _build_direct_cre_overlap_map_analysis(
             exc,
         )
     return result
+
+
+def _get_specialized_cheatsheet_group(standards: list[str]) -> str | None:
+    if OWASP_CHEATSHEETS_STANDARD_NAME not in standards:
+        return None
+
+    for category, config in SPECIALIZED_CHEATSHEET_GROUPS.items():
+        if any(standard in config["standards"] for standard in standards):
+            return category
+    return None
+
+
+def _build_specialized_cheatsheet_section(
+    standards: list[str], gap_analysis_result: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    category = _get_specialized_cheatsheet_group(standards)
+    if not category or not gap_analysis_result:
+        return None
+
+    result = gap_analysis_result.get("result")
+    if not isinstance(result, dict):
+        return None
+
+    return {
+        "category": category,
+        "standards": standards,
+        "result": result,
+    }
+
+
+def _is_allowed_specialized_cheatsheet_match(
+    category: str | None, base_node: defs.Standard, compare_node: defs.Standard
+) -> bool:
+    if category != "AI / LLM Cheat Sheets":
+        return True
+
+    if base_node.name == LLM_TOP10_STANDARD_NAME and compare_node.name == OWASP_CHEATSHEETS_STANDARD_NAME:
+        allowed = AI_LLM_SECTION_CHEATSHEET_MATCHES.get(base_node.sectionID or "", set())
+        return compare_node.section in allowed
+
+    if (
+        base_node.name == OWASP_CHEATSHEETS_STANDARD_NAME
+        and compare_node.name == LLM_TOP10_STANDARD_NAME
+    ):
+        allowed = AI_LLM_SECTION_CHEATSHEET_MATCHES.get(compare_node.sectionID or "", set())
+        return base_node.section in allowed
+
+    return True
 
 
 def extend_cre_with_tag_links(
@@ -678,8 +785,15 @@ def map_analysis() -> Any:
         gap_analysis_result = database.get_gap_analysis_result(standards_hash)
         if gap_analysis_result:
             result = flask_json.loads(gap_analysis_result)
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, result
+            )
             if owasp_top10_comparison:
                 result["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                result["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(result)
 
     # On Heroku (read-only), check if standards exist before attempting Redis/queue operations
@@ -713,15 +827,29 @@ def map_analysis() -> Any:
             standards, standards_hash, database
         )
         if upstream_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, upstream_gap_analysis
+            )
             if owasp_top10_comparison:
                 upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                upstream_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(upstream_gap_analysis)
         direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
             standards, standards_hash, database
         )
         if direct_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, direct_gap_analysis
+            )
             if owasp_top10_comparison:
                 direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                direct_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(direct_gap_analysis)
         if owasp_top10_comparison:
             return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
@@ -736,21 +864,42 @@ def map_analysis() -> Any:
             standards, standards_hash, database
         )
         if upstream_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, upstream_gap_analysis
+            )
             if owasp_top10_comparison:
                 upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                upstream_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(upstream_gap_analysis)
         direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
             standards, standards_hash, database
         )
         if direct_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, direct_gap_analysis
+            )
             if owasp_top10_comparison:
                 direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                direct_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(direct_gap_analysis)
         if owasp_top10_comparison:
             return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
         raise
     if owasp_top10_comparison:
         gap_analysis_dict["owasp_top10_comparison"] = owasp_top10_comparison
+    specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+        standards, gap_analysis_dict
+    )
+    if specialized_cheatsheet_section:
+        gap_analysis_dict["specialized_cheatsheet_section"] = (
+            specialized_cheatsheet_section
+        )
     if "result" in gap_analysis_dict:
         return jsonify(gap_analysis_dict)
     if gap_analysis_dict.get("error"):
@@ -758,15 +907,29 @@ def map_analysis() -> Any:
             standards, standards_hash, database
         )
         if upstream_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, upstream_gap_analysis
+            )
             if owasp_top10_comparison:
                 upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                upstream_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(upstream_gap_analysis)
         direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
             standards, standards_hash, database
         )
         if direct_gap_analysis:
+            specialized_cheatsheet_section = _build_specialized_cheatsheet_section(
+                standards, direct_gap_analysis
+            )
             if owasp_top10_comparison:
                 direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            if specialized_cheatsheet_section:
+                direct_gap_analysis["specialized_cheatsheet_section"] = (
+                    specialized_cheatsheet_section
+                )
             return jsonify(direct_gap_analysis)
         if owasp_top10_comparison:
             return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
@@ -842,6 +1005,13 @@ def fetch_job() -> Any:
                 if ga:
                     # logger.__delattr__("and results in cache")
                     ga = flask_json.loads(ga)
+                    specialized_cheatsheet_section = (
+                        _build_specialized_cheatsheet_section(standards, ga)
+                    )
+                    if specialized_cheatsheet_section:
+                        ga["specialized_cheatsheet_section"] = (
+                            specialized_cheatsheet_section
+                        )
                     if "result" in ga:
                         return jsonify(ga)
                     else:

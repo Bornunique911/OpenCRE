@@ -33,6 +33,32 @@ class MockJob:
         return rq.job.JobStatus.STARTED
 
 
+class MockFinishedJobResult:
+    class Type:
+        SUCCESSFUL = "successful"
+        FAILED = "failed"
+
+    type = Type.SUCCESSFUL
+
+    @property
+    def return_value(self):
+        return [
+            [
+                "OWASP Top 10 for LLM and Gen AI Apps 2025",
+                "OWASP Cheat Sheets",
+            ],
+            {"status": "done"},
+        ]
+
+
+class MockFinishedJob:
+    def get_status(self):
+        return rq.job.JobStatus.FINISHED
+
+    def latest_result(self):
+        return MockFinishedJobResult()
+
+
 class TestMain(unittest.TestCase):
     def tearDown(self) -> None:
         sqla.session.remove()
@@ -877,6 +903,180 @@ class TestMain(unittest.TestCase):
         self.assertIn(compare.id, payload["result"][base.id]["paths"])
         db_mock.return_value.add_gap_analysis_result.assert_called_once()
 
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_filters_generic_cheatsheets_for_llm_top10(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        broad_cre = defs.CRE(id="064-808", name="Output encoding", description="")
+        llm_specific_cre = defs.CRE(
+            id="161-451", name="Prompt boundary protection", description=""
+        )
+
+        llm = defs.Standard(
+            name="OWASP Top 10 for LLM and Gen AI Apps 2025",
+            sectionID="LLM05",
+            section="Improper Output Handling",
+        )
+        llm.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=broad_cre.shallow_copy())
+        )
+        llm.add_link(
+            defs.Link(
+                ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy()
+            )
+        )
+
+        generic_cheatsheet = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="Cross Site Scripting Prevention Cheat Sheet",
+        )
+        generic_cheatsheet.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=broad_cre.shallow_copy())
+        )
+
+        llm_cheatsheet = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="LLM Prompt Injection Prevention Cheat Sheet",
+        )
+        llm_cheatsheet.add_link(
+            defs.Link(
+                ltype=defs.LinkTypes.LinkedTo, document=llm_specific_cre.shallow_copy()
+            )
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [llm]
+            if name == "OWASP Top 10 for LLM and Gen AI Apps 2025"
+            else (
+                [generic_cheatsheet, llm_cheatsheet]
+                if name == "OWASP Cheat Sheets"
+                else []
+            )
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%20for%20LLM%20and%20Gen%20AI%20Apps%202025&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertEqual(
+            "AI / LLM Cheat Sheets",
+            payload["specialized_cheatsheet_section"]["category"],
+        )
+        self.assertIn(llm.id, payload["result"])
+        self.assertNotIn(llm_cheatsheet.id, payload["result"][llm.id]["paths"])
+        self.assertNotIn(generic_cheatsheet.id, payload["result"][llm.id]["paths"])
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_keeps_prompt_injection_cheatsheet_for_llm01(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        prompt_cre = defs.CRE(
+            id="161-451", name="Prompt boundary protection", description=""
+        )
+
+        llm = defs.Standard(
+            name="OWASP Top 10 for LLM and Gen AI Apps 2025",
+            sectionID="LLM01",
+            section="Prompt Injection",
+        )
+        llm.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=prompt_cre.shallow_copy())
+        )
+
+        llm_cheatsheet = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="LLM Prompt Injection Prevention Cheat Sheet",
+        )
+        llm_cheatsheet.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=prompt_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [llm]
+            if name == "OWASP Top 10 for LLM and Gen AI Apps 2025"
+            else [llm_cheatsheet]
+            if name == "OWASP Cheat Sheets"
+            else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%20for%20LLM%20and%20Gen%20AI%20Apps%202025&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn(llm.id, payload["result"])
+        self.assertIn(llm_cheatsheet.id, payload["result"][llm.id]["paths"])
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_adds_specialized_section_for_api_cheatsheets(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        authz_cre = defs.CRE(
+            id="117-371", name="Centralized access control", description=""
+        )
+        base = defs.Standard(
+            name="OWASP API Security Top 10 2023",
+            sectionID="API1",
+            section="Broken Object Level Authorization",
+        )
+        base.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=authz_cre.shallow_copy())
+        )
+
+        compare = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="Authorization Cheat Sheet",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=authz_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
+            if name == "OWASP API Security Top 10 2023"
+            else [compare] if name == "OWASP Cheat Sheets" else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20API%20Security%20Top%2010%202023&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "API Cheat Sheets",
+            payload["specialized_cheatsheet_section"]["category"],
+        )
+        self.assertIn(base.id, payload["specialized_cheatsheet_section"]["result"])
+
     @patch.object(web_main.gap_analysis, "schedule")
     @patch.object(db, "Node_collection")
     def test_gap_analysis_supports_opencre_as_standard(
@@ -1169,6 +1369,62 @@ class TestMain(unittest.TestCase):
             redis_conn_mock.return_value.set.assert_called_with(
                 "aaa >> bbb", '{"job_id": "ABC", "result": ""}'
             )
+
+    @patch.object(web_main.redis, "connect")
+    @patch.object(rq.job.Job, "fetch")
+    @patch.object(db, "Node_collection")
+    def test_ma_job_results_adds_specialized_cheatsheet_section(
+        self, db_mock, fetch_mock, redis_connect_mock
+    ) -> None:
+        shared_cre = defs.CRE(id="161-451", name="Prompt boundary protection", description="")
+        llm = defs.Standard(
+            name="OWASP Top 10 for LLM and Gen AI Apps 2025",
+            sectionID="LLM01",
+            section="Prompt Injection",
+        )
+        llm.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+        cheatsheet = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="LLM Prompt Injection Prevention Cheat Sheet",
+        )
+        cheatsheet.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+
+        cached_gap = {
+            "result": {
+                llm.id: {
+                    "start": llm.shallow_copy().todict(),
+                    "paths": {
+                        cheatsheet.id: {
+                            "end": cheatsheet.shallow_copy().todict(),
+                            "path": [],
+                            "score": 0,
+                        }
+                    },
+                    "extra": 0,
+                }
+            }
+        }
+
+        fetch_mock.return_value = MockFinishedJob()
+        redis_connect_mock.return_value.exists.return_value = True
+        db_mock.return_value.get_gap_analysis_result.return_value = json.dumps(cached_gap)
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/ma_job_results?id=ABC",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "AI / LLM Cheat Sheets",
+            payload["specialized_cheatsheet_section"]["category"],
+        )
 
     @patch.object(redis, "from_url")
     @patch.object(db, "Node_collection")
