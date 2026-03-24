@@ -518,6 +518,63 @@ class TestMain(unittest.TestCase):
             self.assertEqual(json.loads(response.data.decode()), expected)
             self.assertEqual(200, response.status_code)
 
+    def test_find_root_cres_featured_standards(self) -> None:
+        collection = db.Node_collection().with_graph()
+
+        root_cre = defs.CRE(id="111-115", description="CA", name="CA", tags=["ta"])
+        collection.add_cre(root_cre)
+
+        featured_nodes = [
+            defs.Standard(
+                name="OWASP Top 10 for LLM and Gen AI Apps 2025",
+                sectionID="LLM01",
+                section="Prompt Injection",
+            ),
+            defs.Standard(
+                name="OWASP AI Security Verification Standard (AISVS)",
+                sectionID="AISVS1",
+                section="Training Data Governance & Bias Management",
+            ),
+            defs.Standard(
+                name="OWASP API Security Top 10 2023",
+                sectionID="API1",
+                section="Broken Object Level Authorization",
+            ),
+            defs.Standard(
+                name="Cloud Controls Matrix",
+                sectionID="AIS-01",
+                section="Application and Interface Security",
+            ),
+            defs.Standard(
+                name="OWASP Kubernetes Top Ten 2025 (Draft)",
+                sectionID="K01",
+                section="Insecure Workload Configurations",
+            ),
+        ]
+        for node in featured_nodes:
+            collection.add_node(node)
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/root_cres",
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertIn("data", payload)
+        self.assertIn("featured_standards", payload)
+        self.assertCountEqual(
+            ["AI", "API", "Cloud"], payload["featured_standards"].keys()
+        )
+        self.assertEqual(2, len(payload["featured_standards"]["AI"]))
+        self.assertEqual(1, len(payload["featured_standards"]["API"]))
+        self.assertEqual(2, len(payload["featured_standards"]["Cloud"]))
+        self.assertEqual(
+            "OWASP Top 10 for LLM and Gen AI Apps 2025",
+            payload["featured_standards"]["AI"][0]["name"],
+        )
+
     def test_smartlink(self) -> None:
         self.maxDiff = None
         collection = db.Node_collection().with_graph()
@@ -622,6 +679,253 @@ class TestMain(unittest.TestCase):
             )
             self.assertEqual(200, response.status_code)
             self.assertEqual(expected, json.loads(response.data))
+
+    @patch.object(redis, "from_url")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_adds_owasp_top10_comparison_section(
+        self, db_mock, redis_conn_mock
+    ) -> None:
+        expected = {"result": "hello"}
+        top10_2021 = [
+            defs.Standard(
+                name="OWASP Top 10 2021",
+                sectionID="A01",
+                section="Broken Access Controls",
+                hyperlink="https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+            ),
+            defs.Standard(
+                name="OWASP Top 10 2021",
+                sectionID="A02",
+                section="Cryptographic Failures",
+                hyperlink="https://owasp.org/Top10/A02_2021-Cryptographic_Failures/",
+            ),
+        ]
+        top10_2025 = [
+            defs.Standard(
+                name="OWASP Top 10 2025",
+                sectionID="A01",
+                section="Broken Access Control",
+                hyperlink="https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/",
+            ),
+            defs.Standard(
+                name="OWASP Top 10 2025",
+                sectionID="A02",
+                section="Security Misconfiguration",
+                hyperlink="https://owasp.org/Top10/2025/A02_2025-Security_Misconfiguration/",
+            ),
+        ]
+        redis_conn_mock.return_value.exists.return_value = True
+        redis_conn_mock.return_value.get.return_value = json.dumps(expected)
+        db_mock.return_value.get_gap_analysis_result.return_value = json.dumps(expected)
+        db_mock.return_value.gap_analysis_exists.return_value = True
+
+        def get_nodes_side_effect(name=None, **kwargs):
+            if name == "OWASP Top 10 2021":
+                return top10_2021
+            if name == "OWASP Top 10 2025":
+                return top10_2025
+            return []
+
+        db_mock.return_value.get_nodes.side_effect = get_nodes_side_effect
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%202021&standard=OWASP%20Top%2010%202025",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("hello", payload["result"])
+        self.assertIn("owasp_top10_comparison", payload)
+        self.assertEqual(
+            ["OWASP Top 10 2021", "OWASP Top 10 2025"],
+            payload["owasp_top10_comparison"]["standards"],
+        )
+        self.assertEqual(
+            "Broken Access Controls",
+            payload["owasp_top10_comparison"]["items"][0]["top10_2021"]["section"],
+        )
+        self.assertEqual(
+            "Broken Access Control",
+            payload["owasp_top10_comparison"]["items"][0]["top10_2025"]["section"],
+        )
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_owasp_comparison_when_schedule_fails(
+        self, db_mock, schedule_mock
+    ) -> None:
+        top10_2021 = [
+            defs.Standard(
+                name="OWASP Top 10 2021",
+                sectionID="A01",
+                section="Broken Access Controls",
+                hyperlink="https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+            )
+        ]
+        top10_2025 = [
+            defs.Standard(
+                name="OWASP Top 10 2025",
+                sectionID="A01",
+                section="Broken Access Control",
+                hyperlink="https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/",
+            )
+        ]
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+
+        def get_nodes_side_effect(name=None, **kwargs):
+            if name == "OWASP Top 10 2021":
+                return top10_2021
+            if name == "OWASP Top 10 2025":
+                return top10_2025
+            return []
+
+        db_mock.return_value.get_nodes.side_effect = get_nodes_side_effect
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%202021&standard=OWASP%20Top%2010%202025",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("owasp_top10_comparison", payload)
+        self.assertEqual(
+            "Broken Access Controls",
+            payload["owasp_top10_comparison"]["items"][0]["top10_2021"]["section"],
+        )
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_upstream_result_when_schedule_fails(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        expected = {"result": {"A01": {"start": "x"}}}
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.return_value = expected
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%202021&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(expected, json.loads(response.data))
+        upstream_fetch_mock.assert_called_once_with(
+            "/map_analysis?standard=OWASP%20Top%2010%202021&standard=OWASP%20Cheat%20Sheets",
+            timeout=5.0,
+            max_attempts=1,
+            backoff_seconds=0.5,
+        )
+        db_mock.return_value.add_gap_analysis_result.assert_called_once_with(
+            cache_key="OWASP Top 10 2021 >> OWASP Cheat Sheets",
+            ga_object=json.dumps(expected),
+        )
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_direct_cre_overlap_when_backends_fail(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        shared_cre = defs.CRE(id="170-772", name="Cryptography", description="")
+        base = defs.Standard(
+            name="OWASP Top 10 2025",
+            sectionID="A04",
+            section="Cryptographic Failures",
+        )
+        base.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+        compare = defs.Standard(
+            name="OWASP Web Security Testing Guide (WSTG)",
+            section="WSTG-CRYP-04",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
+            if name == "OWASP Top 10 2025"
+            else [compare] if name == "OWASP Web Security Testing Guide (WSTG)" else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%202025&standard=OWASP%20Web%20Security%20Testing%20Guide%20(WSTG)",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertIn(base.id, payload["result"])
+        self.assertIn(compare.id, payload["result"][base.id]["paths"])
+        db_mock.return_value.add_gap_analysis_result.assert_called_once()
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_normalizes_owasp_top_2025_alias(
+        self, db_mock, schedule_mock
+    ) -> None:
+        top10_2021 = [
+            defs.Standard(
+                name="OWASP Top 10 2021",
+                sectionID="A01",
+                section="Broken Access Controls",
+                hyperlink="https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+            )
+        ]
+        top10_2025 = [
+            defs.Standard(
+                name="OWASP Top 10 2025",
+                sectionID="A01",
+                section="Broken Access Control",
+                hyperlink="https://owasp.org/Top10/2025/A01_2025-Broken_Access_Control/",
+            )
+        ]
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+
+        def get_nodes_side_effect(name=None, **kwargs):
+            if name == "OWASP Top 10 2021":
+                return top10_2021
+            if name == "OWASP Top 10 2025":
+                return top10_2025
+            return []
+
+        db_mock.return_value.get_nodes.side_effect = get_nodes_side_effect
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Top%2010%202021&standard=OWASP%20Top%202025",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("owasp_top10_comparison", payload)
+        self.assertEqual(
+            "Broken Access Control",
+            payload["owasp_top10_comparison"]["items"][0]["top10_2025"]["section"],
+        )
+        schedule_mock.assert_called_once_with(
+            ["OWASP Top 10 2021", "OWASP Top 10 2025"], db_mock.return_value
+        )
 
     @patch.object(db, "Node_collection")
     @patch.object(rq.job.Job, "fetch")
