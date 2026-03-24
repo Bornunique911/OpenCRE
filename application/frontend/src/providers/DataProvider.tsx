@@ -9,8 +9,9 @@ import { Document, TreeDocument } from '../types';
 import { getDbObject, setDbObject } from '../utils'; // Assumes utils/index.tsx is the entry point
 import { getInternalUrl, getTopicDisplayName } from '../utils/document';
 
-const DATA_STORE_KEY = 'data-store',
-  DATA_TREE_KEY = 'record-tree';
+const CACHE_VERSION = 'v2';
+const DATA_STORE_KEY = `data-store-${CACHE_VERSION}`,
+  DATA_TREE_KEY = `record-tree-${CACHE_VERSION}`;
 
 type DataContextValues = {
   dataLoading: boolean;
@@ -84,7 +85,7 @@ export const DataProvider = ({ children }: { children: React.ReactNode }) => {
   const getTreeQuery = useQuery(
     'root_cres',
     async () => {
-      if (!dataTree.length && Object.keys(dataStore).length) {
+      if (Object.keys(dataStore).length) {
         try {
           const result = await axios.get(`${apiUrl}/root_cres`);
           const treeData = result.data.data.map((x) => buildTree(x));
@@ -108,32 +109,30 @@ export const DataProvider = ({ children }: { children: React.ReactNode }) => {
   const getStoreQuery = useQuery(
     'all_cres',
     async () => {
-      if (!Object.keys(dataStore).length) {
-        try {
-          const result = await axios.get(`${apiUrl}/all_cres?page=1&per_page=1000`);
-          let data = result.data.data;
-          let store = {};
+      try {
+        const result = await axios.get(`${apiUrl}/all_cres?page=1&per_page=1000`);
+        let data = result.data.data;
+        let store = {};
 
-          if (data.length) {
-            data.forEach((x) => {
-              store[getStoreKey(x)] = {
-                links: x.links,
-                displayName: getTopicDisplayName(x),
-                url: getInternalUrl(x),
-                ...x,
-              };
-            });
+        if (data.length) {
+          data.forEach((x) => {
+            store[getStoreKey(x)] = {
+              links: x.links,
+              displayName: getTopicDisplayName(x),
+              url: getInternalUrl(x),
+              ...x,
+            };
+          });
 
-            // CHANGE 5: Save to IndexedDB (async) instead of localStorage
-            await setDbObject(DATA_STORE_KEY, store, TWO_DAYS_MILLISECONDS);
+          // CHANGE 5: Save to IndexedDB (async) instead of localStorage
+          await setDbObject(DATA_STORE_KEY, store, TWO_DAYS_MILLISECONDS);
 
-            setDataStore(store);
-            console.log('retrieved all cres');
-          }
-        } catch (error) {
-          console.error('Could not retrieve CREs error:');
-          console.error(error);
+          setDataStore(store);
+          console.log('retrieved all cres');
         }
+      } catch (error) {
+        console.error('Could not retrieve CREs error:');
+        console.error(error);
       }
     },
     {
