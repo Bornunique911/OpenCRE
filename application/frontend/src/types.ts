@@ -39,6 +39,30 @@ export interface GapAnalysisPathStart {
   weakLinks: Record<string, GapAnalysisPath>;
 }
 
+export interface OwaspTop10ComparisonItemEntry {
+  hyperlink?: string;
+  section: string;
+  section_id: string;
+}
+
+export interface OwaspTop10ComparisonItem {
+  rank: string;
+  changed: boolean;
+  top10_2021?: OwaspTop10ComparisonItemEntry;
+  top10_2025?: OwaspTop10ComparisonItemEntry;
+}
+
+export interface OwaspTop10Comparison {
+  standards: string[];
+  items: OwaspTop10ComparisonItem[];
+}
+
+export interface SpecializedCheatsheetSection {
+  category: string;
+  standards: string[];
+  result: Record<string, GapAnalysisPathStart>;
+}
+
 export interface TreeDocument extends Document {
   displayName: string;
   url: string;

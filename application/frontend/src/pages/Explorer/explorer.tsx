@@ -65,6 +65,32 @@ export const Explorer = () => {
     }
   };
 
+  const collectExpandableIds = (nodes: TreeDocument[] = []): string[] => {
+    const ids: string[] = [];
+
+    const visit = (node: TreeDocument | null) => {
+      if (!node) {
+        return;
+      }
+      const contains = (node.links || []).filter((link) => link.ltype === TYPE_CONTAINS);
+      if (contains.length > 0) {
+        ids.push(node.id);
+        contains.forEach((child) => visit(child.document));
+      }
+    };
+
+    nodes.forEach((node) => visit(node));
+    return ids;
+  };
+
+  const collapseAll = () => {
+    setCollapsedItems(collectExpandableIds(filteredTree || []));
+  };
+
+  const expandAll = () => {
+    setCollapsedItems([]);
+  };
+
   useEffect(() => {
     if (dataTree.length) {
       const treeCopy = structuredClone(dataTree);
@@ -136,11 +162,7 @@ export const Explorer = () => {
         <h1>Open CRE Explorer</h1>
         <p>
           A visual explorer of Open Common Requirement Enumerations (CREs). Originally created by:{' '}
-          <a
-            target="_blank"
-            rel="noopener noreferrer"
-            href="https://zeljkoobrenovic.github.io/opencre-explorer/"
-          >
+          <a target="_blank" rel="noopener noreferrer" href="https://zeljkoobrenovic.github.io/opencre-explorer/">
             Zeljko Obrenovic
           </a>
           .
@@ -150,6 +172,14 @@ export const Explorer = () => {
           <div className="search-field">
             <input id="filter" type="text" placeholder="Search Explorer..." onKeyUp={update} />
             <div id="search-summary"></div>
+          </div>
+          <div className="tree-actions">
+            <button type="button" onClick={expandAll}>
+              Expand all
+            </button>
+            <button type="button" onClick={collapseAll}>
+              Collapse all
+            </button>
           </div>
           <div id="graphs-menu">
             <h4 className="menu-title">Explore visually:</h4>
