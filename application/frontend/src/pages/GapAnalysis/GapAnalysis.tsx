@@ -57,7 +57,7 @@ const getInitialStandardsFromQuery = (searchParams: URLSearchParams) => {
 };
 
 const GetStrength = (score) => {
-  if (score == 0) return 'Direct';
+  if (score == 0) return 'Shared CRE';
   if (score <= GA_STRONG_UPPER_LIMIT) return 'Strong';
   if (score >= 7) return 'Weak';
   return 'Average';
@@ -138,7 +138,7 @@ const GetResultLine = (path, gapAnalysis, key, specializedCategory?: string) => 
           <Popup.Content>
             <b>Generally: lower is better</b>
             <br />
-            <b style={{ color: GetStrengthColor(0) }}>{GetStrength(0)}</b>: Directly Linked
+            <b style={{ color: GetStrengthColor(0) }}>{GetStrength(0)}</b>: Standards share a directly linked CRE
             <br />
             <b style={{ color: GetStrengthColor(GA_STRONG_UPPER_LIMIT) }}>
               {GetStrength(GA_STRONG_UPPER_LIMIT)}
