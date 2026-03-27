@@ -35,6 +35,27 @@ main#explorer-content {
     }
   }
 
+  .tree-actions {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 14px;
+
+    button {
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid #b1b0b0;
+      border-radius: 4px;
+      background: #ffffff;
+      color: #1a202c;
+      cursor: pointer;
+      font-size: 14px;
+
+      &:hover {
+        background: #f4f6f8;
+      }
+    }
+  }
+
   #graphs-menu {
     display: flex;
     margin-bottom: 20px;
@@ -155,6 +176,10 @@ main#explorer-content {
         width: 100%;
         /* Expand from fixed 320px - overflows on small screens */
       }
+    }
+
+    .tree-actions {
+      flex-wrap: wrap;
     }
 
     .item {
