@@ -85,6 +85,7 @@ ROOT_CRES_FEATURED_STANDARDS = {
     ],
 }
 ROOT_CRES_FEATURED_STANDARD_LIMIT = 2
+OPENCRE_STANDARD_NAME = "OpenCRE"
 LLM_TOP10_STANDARD_NAME = "OWASP Top 10 for LLM and Gen AI Apps 2025"
 AISVS_STANDARD_NAME = "OWASP AI Security Verification Standard (AISVS)"
 API_TOP10_STANDARD_NAME = "OWASP API Security Top 10 2023"
@@ -286,6 +287,114 @@ def _fetch_upstream_map_analysis(
                 standards_hash,
                 exc,
             )
+    return result
+
+
+def _get_opencre_documents(collection: db.Node_collection) -> list[defs.CRE]:
+    return [
+        collection.get_CREs(internal_id=cre.id)[0]
+        for cre in collection.session.query(db.CRE).all()
+    ]
+
+
+def _get_opencre_map_analysis_documents(
+    standard: str, collection: db.Node_collection
+) -> list[defs.Document]:
+    if standard == OPENCRE_STANDARD_NAME:
+        return _get_opencre_documents(collection)
+    return collection.get_nodes(name=standard)
+
+
+def _build_opencre_direct_link_path(
+    start_document: defs.Document, end_document: defs.Document
+) -> dict[str, Any]:
+    segment_start = start_document.shallow_copy()
+    # Keep the direct-link response compatible with the current popup renderer.
+    if segment_start.doctype != defs.Credoctypes.CRE.value:
+        segment_start.id = ""
+    return {
+        "end": end_document.shallow_copy(),
+        "path": [
+            {
+                "start": segment_start,
+                "end": end_document.shallow_copy(),
+                "relationship": "LINKED_TO",
+                "score": 0,
+            }
+        ],
+        "score": 0,
+    }
+
+
+def _make_opencre_direct_link_path_key(end_document: defs.Document) -> str:
+    return end_document.id
+
+
+def _add_opencre_direct_link_result(
+    grouped_paths: dict[str, dict[str, Any]],
+    start_document: defs.Document,
+    end_document: defs.Document,
+) -> None:
+    shared_paths = grouped_paths.setdefault(
+        start_document.id,
+        {
+            "start": start_document.shallow_copy(),
+            "paths": {},
+            "extra": 0,
+        },
+    )["paths"]
+    shared_paths.setdefault(
+        _make_opencre_direct_link_path_key(end_document),
+        _build_opencre_direct_link_path(start_document, end_document),
+    )
+
+
+def _build_opencre_direct_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    base_standard = standards[0]
+    compare_standard = standards[1]
+    base_nodes = _get_opencre_map_analysis_documents(base_standard, collection)
+    compare_nodes = _get_opencre_map_analysis_documents(compare_standard, collection)
+    if not base_nodes or not compare_nodes:
+        return None
+
+    base_is_opencre = base_standard == OPENCRE_STANDARD_NAME
+    opencre_nodes = base_nodes if base_is_opencre else compare_nodes
+    standard_nodes = compare_nodes if base_is_opencre else base_nodes
+
+    standard_nodes_by_id = {
+        standard_node.id: standard_node for standard_node in standard_nodes
+    }
+    direct_pairs: list[tuple[defs.CRE, defs.Document]] = []
+    for opencre_node in opencre_nodes:
+        for link in opencre_node.links:
+            if link.ltype != defs.LinkTypes.LinkedTo:
+                continue
+            standard_node = standard_nodes_by_id.get(link.document.id)
+            if not standard_node:
+                continue
+            direct_pairs.append((opencre_node, standard_node))
+
+    grouped_paths: dict[str, dict[str, Any]] = {}
+    for opencre_node, standard_node in direct_pairs:
+        if base_is_opencre:
+            _add_opencre_direct_link_result(grouped_paths, opencre_node, standard_node)
+        else:
+            _add_opencre_direct_link_result(grouped_paths, standard_node, opencre_node)
+
+    if not grouped_paths:
+        return None
+
+    result = {"result": grouped_paths}
+    collection.add_gap_analysis_result(
+        cache_key=standards_hash, ga_object=flask_json.dumps(result)
+    )
     return result
 
 
@@ -575,6 +684,13 @@ def map_analysis() -> Any:
 
     database = db.Node_collection()
     standards_hash = gap_analysis.make_resources_key(standards)
+    if OPENCRE_STANDARD_NAME in standards:
+        direct_gap_analysis = _build_opencre_direct_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            return jsonify(direct_gap_analysis)
+        abort(404, "No direct overlap found for requested standards")
     owasp_top10_comparison = _build_owasp_top10_comparison(standards, database)
 
     # First, check if we have cached results in the database
@@ -771,7 +887,9 @@ def standards() -> Any:
         posthog.capture(f"standards", "")
 
     database = db.Node_collection()
-    standards = database.standards()
+    standards = list(database.standards())
+    if OPENCRE_STANDARD_NAME not in standards:
+        standards.append(OPENCRE_STANDARD_NAME)
     return standards
 
 
