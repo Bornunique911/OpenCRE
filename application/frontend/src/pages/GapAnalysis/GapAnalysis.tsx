@@ -13,14 +13,21 @@ import { getDocumentDisplayName } from '../../utils';
 import { getInternalUrl } from '../../utils/document';
 
 const GetSegmentText = (segment, segmentID) => {
+  const followsStart = segment.start.id && segment.start.id === segmentID;
+  const followsEnd = segment.end.id && segment.end.id === segmentID;
+  const defaultToEnd =
+    segment.start.doctype !== 'CRE' && segment.end.doctype === 'CRE';
+
   let textPart = segment.end;
   let nextID = segment.end.id;
   let arrow = <Icon name="arrow down" />;
-  if (segmentID !== segment.start.id) {
+
+  if (followsEnd || (!followsStart && !defaultToEnd)) {
     textPart = segment.start;
     nextID = segment.start.id;
     arrow = <Icon name="arrow up" />;
   }
+
   const text = (
     <>
       <br />
@@ -28,8 +35,7 @@ const GetSegmentText = (segment, segmentID) => {
       <span style={{ textTransform: 'capitalize' }}>
         {segment.relationship.replace('_', ' ').toLowerCase()} {segment.score > 0 && <> (+{segment.score})</>}
       </span>
-      <br /> {getDocumentDisplayName(textPart, true)} {textPart.section ?? ''} {textPart.subsection ?? ''}{' '}
-      {textPart.description ?? ''}
+      <br /> {getDocumentDisplayName(textPart, true)} {textPart.description ?? ''}
     </>
   );
   return { text, nextID };
