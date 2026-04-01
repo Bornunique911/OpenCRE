@@ -1077,6 +1077,157 @@ class TestMain(unittest.TestCase):
         )
         self.assertIn(base.id, payload["specialized_cheatsheet_section"]["result"])
 
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_adds_specialized_section_for_kubernetes_2022_cheatsheets(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        network_cre = defs.CRE(
+            id="132-146", name="Network segmentation", description=""
+        )
+        base = defs.Standard(
+            name="OWASP Kubernetes Top Ten 2022",
+            sectionID="K07",
+            section="Missing Network Segmentation Controls",
+        )
+        base.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=network_cre.shallow_copy())
+        )
+
+        compare = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="Kubernetes Security Cheat Sheet",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=network_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
+            if name == "OWASP Kubernetes Top Ten 2022"
+            else [compare] if name == "OWASP Cheat Sheets" else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Kubernetes%20Top%20Ten%202022&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "Cloud Cheat Sheets",
+            payload["specialized_cheatsheet_section"]["category"],
+        )
+        self.assertIn(base.id, payload["specialized_cheatsheet_section"]["result"])
+        self.assertIn(compare.id, payload["result"][base.id]["paths"])
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_adds_specialized_section_for_kubernetes_2025_cheatsheets(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        network_cre = defs.CRE(
+            id="132-146", name="Network segmentation", description=""
+        )
+        base = defs.Standard(
+            name="OWASP Kubernetes Top Ten 2025 (Draft)",
+            sectionID="K05",
+            section="Missing Network Segmentation Controls",
+        )
+        base.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=network_cre.shallow_copy())
+        )
+
+        compare = defs.Standard(
+            name="OWASP Cheat Sheets",
+            section="Kubernetes Security Cheat Sheet",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=network_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
+            if name == "OWASP Kubernetes Top Ten 2025 (Draft)"
+            else [compare] if name == "OWASP Cheat Sheets" else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Kubernetes%20Top%20Ten%202025%20%28Draft%29&standard=OWASP%20Cheat%20Sheets",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            "Cloud Cheat Sheets",
+            payload["specialized_cheatsheet_section"]["category"],
+        )
+        self.assertIn(base.id, payload["specialized_cheatsheet_section"]["result"])
+        self.assertIn(compare.id, payload["result"][base.id]["paths"])
+
+    @patch.object(web_main.cre_main, "fetch_upstream_json")
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_direct_overlap_for_kubernetes_and_ccm(
+        self, db_mock, schedule_mock, upstream_fetch_mock
+    ) -> None:
+        shared_cre = defs.CRE(
+            id="117-371", name="Centralized policy enforcement", description=""
+        )
+        base = defs.Standard(
+            name="OWASP Kubernetes Top Ten 2022",
+            sectionID="K04",
+            section="Lack of Centralized Policy Enforcement",
+        )
+        base.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+
+        compare = defs.Standard(
+            name="Cloud Controls Matrix",
+            sectionID="AIS-01",
+            section="Application and Interface Security",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [base]
+            if name == "OWASP Kubernetes Top Ten 2022"
+            else [compare] if name == "Cloud Controls Matrix" else []
+        )
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+        upstream_fetch_mock.side_effect = RuntimeError("upstream unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Kubernetes%20Top%20Ten%202022&standard=Cloud%20Controls%20Matrix",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertIn(base.id, payload["result"])
+        self.assertIn(compare.id, payload["result"][base.id]["paths"])
+
     @patch.object(web_main.gap_analysis, "schedule")
     @patch.object(db, "Node_collection")
     def test_gap_analysis_supports_opencre_as_standard(
