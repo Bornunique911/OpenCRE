@@ -12,19 +12,41 @@ import { GapAnalysisPathStart, OwaspTop10Comparison, SpecializedCheatsheetSectio
 import { getDocumentDisplayName } from '../../utils';
 import { getInternalUrl } from '../../utils/document';
 
-const GetSegmentText = (segment, segmentID) => {
-  const followsStart = segment.start.id && segment.start.id === segmentID;
-  const followsEnd = segment.end.id && segment.end.id === segmentID;
-  const defaultToEnd =
-    segment.start.doctype !== 'CRE' && segment.end.doctype === 'CRE';
+const documentsMatch = (left, right) => {
+  if (!left || !right) return false;
+  if (left.id && right.id) return left.id === right.id;
 
+  return (
+    left.doctype === right.doctype &&
+    left.name === right.name &&
+    left.version === right.version &&
+    left.sectionID === right.sectionID &&
+    left.section === right.section &&
+    left.subsection === right.subsection
+  );
+};
+
+const GetSegmentText = (segment, currentDocument) => {
   let textPart = segment.end;
-  let nextID = segment.end.id;
+  let nextDocument = segment.end;
   let arrow = <Icon name="arrow down" />;
 
-  if (followsEnd || (!followsStart && !defaultToEnd)) {
+  if (documentsMatch(currentDocument, segment.start)) {
+    textPart = segment.end;
+    nextDocument = segment.end;
+  } else if (documentsMatch(currentDocument, segment.end)) {
     textPart = segment.start;
-    nextID = segment.start.id;
+    nextDocument = segment.start;
+    arrow = <Icon name="arrow up" />;
+  } else if (currentDocument?.doctype !== 'CRE') {
+    if (segment.start.doctype === 'CRE' && segment.end.doctype !== 'CRE') {
+      textPart = segment.start;
+      nextDocument = segment.start;
+      arrow = <Icon name="arrow up" />;
+    }
+  } else if (segment.end.doctype === 'CRE' && segment.start.doctype !== 'CRE') {
+    textPart = segment.start;
+    nextDocument = segment.start;
     arrow = <Icon name="arrow up" />;
   }
 
@@ -35,10 +57,10 @@ const GetSegmentText = (segment, segmentID) => {
       <span style={{ textTransform: 'capitalize' }}>
         {segment.relationship.replace('_', ' ').toLowerCase()} {segment.score > 0 && <> (+{segment.score})</>}
       </span>
-      <br /> {getDocumentDisplayName(textPart, true)} {textPart.description ?? ''}
+      <br /> {getDocumentDisplayName(textPart, true)} {textPart.doctype === 'CRE' ? textPart.description ?? '' : ''}
     </>
   );
-  return { text, nextID };
+  return { text, nextDocument };
 };
 
 function useQuery() {
@@ -108,7 +130,7 @@ const formatCheatsheetLabel = (document, specializedCategory?: string) => {
 };
 
 const GetResultLine = (path, gapAnalysis, key, specializedCategory?: string) => {
-  let segmentID = gapAnalysis[key].start.id;
+  let currentDocument = gapAnalysis[key].start;
   return (
     <div key={path.end.id} style={{ marginBottom: '.25em', fontWeight: 'bold' }}>
       <a href={getInternalUrl(path.end)} target="_blank" rel="noopener noreferrer">
@@ -123,8 +145,8 @@ const GetResultLine = (path, gapAnalysis, key, specializedCategory?: string) => 
           <Popup.Content>
             {getDocumentDisplayName(gapAnalysis[key].start, true)}
             {path.path.map((segment) => {
-              const { text, nextID } = GetSegmentText(segment, segmentID);
-              segmentID = nextID;
+              const { text, nextDocument } = GetSegmentText(segment, currentDocument);
+              currentDocument = nextDocument;
               return text;
             })}
           </Popup.Content>
