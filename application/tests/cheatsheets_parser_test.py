@@ -41,13 +41,6 @@ class TestCheatsheetsParser(unittest.TestCase):
             ),
             "w",
         ) as mdf:
-        with open(
-            os.path.join(
-                os.path.join(loc, "cheatsheets"),
-                "Secrets_Management_Cheat_Sheet.md",
-            ),
-            "w",
-        ) as mdf:
             mdf.write(cs)
         mock_clone.return_value = repo
         entries = cheatsheets_parser.Cheatsheets().parse(
@@ -58,7 +51,6 @@ class TestCheatsheetsParser(unittest.TestCase):
         # verify the external tagging convention, not just enum wiring.
         expected = defs.Standard(
             name="OWASP Cheat Sheets",
-            hyperlink="https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
             hyperlink="https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
             section="Secrets Management Cheat Sheet",
             links=[
