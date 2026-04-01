@@ -772,11 +772,11 @@ class TestMain(unittest.TestCase):
         )
         self.assertEqual(
             "Broken Access Controls",
-            payload["owasp_top10_comparison"]["items"][0]["top10_2021"]["section"],
+            payload["owasp_top10_comparison"]["items"][0]["left"]["section"],
         )
         self.assertEqual(
             "Broken Access Control",
-            payload["owasp_top10_comparison"]["items"][0]["top10_2025"]["section"],
+            payload["owasp_top10_comparison"]["items"][0]["right"]["section"],
         )
 
     @patch.object(web_main.gap_analysis, "schedule")
@@ -824,7 +824,7 @@ class TestMain(unittest.TestCase):
         self.assertIn("owasp_top10_comparison", payload)
         self.assertEqual(
             "Broken Access Controls",
-            payload["owasp_top10_comparison"]["items"][0]["top10_2021"]["section"],
+            payload["owasp_top10_comparison"]["items"][0]["left"]["section"],
         )
 
     @patch.object(web_main.cre_main, "fetch_upstream_json")
@@ -1312,10 +1312,88 @@ class TestMain(unittest.TestCase):
         self.assertIn("owasp_top10_comparison", payload)
         self.assertEqual(
             "Broken Access Control",
-            payload["owasp_top10_comparison"]["items"][0]["top10_2025"]["section"],
+            payload["owasp_top10_comparison"]["items"][0]["right"]["section"],
         )
         schedule_mock.assert_called_once_with(
             ["OWASP Top 10 2021", "OWASP Top 10 2025"], db_mock.return_value
+        )
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_adds_kubernetes_comparison_section(
+        self, db_mock, schedule_mock
+    ) -> None:
+        kubernetes_2022 = [
+            defs.Standard(
+                name="OWASP Kubernetes Top Ten 2022",
+                sectionID="K01",
+                section="Insecure Workload Configurations",
+                hyperlink="https://owasp.org/www-project-kubernetes-top-ten/2022/en/src/K01-insecure-workload-configurations",
+            ),
+            defs.Standard(
+                name="OWASP Kubernetes Top Ten 2022",
+                sectionID="K02",
+                section="Supply Chain Vulnerabilities",
+                hyperlink="https://owasp.org/www-project-kubernetes-top-ten/2022/en/src/K02-supply-chain-vulnerabilities",
+            ),
+        ]
+        kubernetes_2025 = [
+            defs.Standard(
+                name="OWASP Kubernetes Top Ten 2025 (Draft)",
+                sectionID="K01",
+                section="Insecure Workload Configurations",
+                hyperlink="https://owasp.org/www-project-kubernetes-top-ten/",
+            ),
+            defs.Standard(
+                name="OWASP Kubernetes Top Ten 2025 (Draft)",
+                sectionID="K02",
+                section="Overly Permissive Authorization Configurations",
+                hyperlink="https://owasp.org/www-project-kubernetes-top-ten/",
+            ),
+        ]
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+
+        def get_nodes_side_effect(name=None, **kwargs):
+            if name == "OWASP Kubernetes Top Ten 2022":
+                return kubernetes_2022
+            if name == "OWASP Kubernetes Top Ten 2025 (Draft)":
+                return kubernetes_2025
+            return []
+
+        db_mock.return_value.get_nodes.side_effect = get_nodes_side_effect
+        schedule_mock.side_effect = RuntimeError("redis unavailable")
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OWASP%20Kubernetes%20Top%20Ten%202022&standard=OWASP%20Kubernetes%20Top%20Ten%202025%20%28Draft%29",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("owasp_top10_comparison", payload)
+        self.assertEqual(
+            [
+                "OWASP Kubernetes Top Ten 2022",
+                "OWASP Kubernetes Top Ten 2025 (Draft)",
+            ],
+            payload["owasp_top10_comparison"]["standards"],
+        )
+        self.assertEqual(
+            "Supply Chain Vulnerabilities",
+            payload["owasp_top10_comparison"]["items"][1]["left"]["section"],
+        )
+        self.assertEqual(
+            "Overly Permissive Authorization Configurations",
+            payload["owasp_top10_comparison"]["items"][1]["right"]["section"],
+        )
+        schedule_mock.assert_called_once_with(
+            [
+                "OWASP Kubernetes Top Ten 2022",
+                "OWASP Kubernetes Top Ten 2025 (Draft)",
+            ],
+            db_mock.return_value,
         )
 
     @patch.object(db, "Node_collection")
