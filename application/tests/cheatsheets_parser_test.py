@@ -34,7 +34,13 @@ class TestCheatsheetsParser(unittest.TestCase):
         repo.working_dir = loc
         cre = defs.CRE(name="blah", id="223-780")
         self.collection.add_cre(cre)
-        with open(os.path.join(os.path.join(loc, "cheatsheets"), "cs.md"), "w") as mdf:
+        with open(
+            os.path.join(
+                os.path.join(loc, "cheatsheets"),
+                "Secrets_Management_Cheat_Sheet.md",
+            ),
+            "w",
+        ) as mdf:
             mdf.write(cs)
         mock_clone.return_value = repo
         entries = cheatsheets_parser.Cheatsheets().parse(
@@ -42,15 +48,19 @@ class TestCheatsheetsParser(unittest.TestCase):
         )
         expected = defs.Standard(
             name="OWASP Cheat Sheets",
-            hyperlink="https://github.com/foo/bar/tree/master/cs.md",
+            hyperlink="https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
             section="Secrets Management Cheat Sheet",
-            links=[defs.Link(document=cre, ltype=defs.LinkTypes.LinkedTo)],
+            links=[
+                defs.Link(
+                    document=cre, ltype=defs.LinkTypes.AutomaticallyLinkedTo
+                )
+            ],
         )
         self.maxDiff = None
         for name, nodes in entries.results.items():
             self.assertEqual(name, cheatsheets_parser.Cheatsheets().name)
             self.assertEqual(len(nodes), 1)
-            self.assertCountEqual(expected.todict(), nodes[0].todict())
+            self.assertEqual(expected.todict(), nodes[0].todict())
 
     cheatsheets_md = """ # Secrets Management Cheat Sheet
 
