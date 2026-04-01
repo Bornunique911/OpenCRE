@@ -48,8 +48,8 @@ export interface OwaspTop10ComparisonItemEntry {
 export interface OwaspTop10ComparisonItem {
   rank: string;
   changed: boolean;
-  top10_2021?: OwaspTop10ComparisonItemEntry;
-  top10_2025?: OwaspTop10ComparisonItemEntry;
+  left?: OwaspTop10ComparisonItemEntry;
+  right?: OwaspTop10ComparisonItemEntry;
 }
 
 export interface OwaspTop10Comparison {
