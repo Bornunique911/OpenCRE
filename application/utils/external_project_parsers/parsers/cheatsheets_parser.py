@@ -14,6 +14,7 @@ from application.prompt_client import prompt_client as prompt_client
 
 class Cheatsheets(ParserInterface):
     name = "OWASP Cheat Sheets"
+    cheatsheetseries_base_url = "https://cheatsheetseries.owasp.org/cheatsheets"
 
     def cheatsheet(
         self, section: str, hyperlink: str, tags: List[str]
@@ -24,6 +25,10 @@ class Cheatsheets(ParserInterface):
             tags=tags,
             hyperlink=hyperlink,
         )
+
+    def official_cheatsheet_url(self, markdown_filename: str) -> str:
+        html_name = os.path.splitext(markdown_filename)[0] + ".html"
+        return f"{self.cheatsheetseries_base_url}/{html_name}"
 
     def parse(self, cache: db.Node_collection, ph: prompt_client.PromptHandler):
         c_repo = "https://github.com/OWASP/CheatSheetSeries.git"
@@ -55,7 +60,7 @@ class Cheatsheets(ParserInterface):
                     name = title.group("title")
                     cre_id = cre.group("cre")
                     cres = cache.get_CREs(external_id=cre_id)
-                    hyperlink = f"{repo_path.replace('.git','')}/tree/master/{cheatsheets_path}{mdfile}"
+                    hyperlink = self.official_cheatsheet_url(mdfile)
                     cs = self.cheatsheet(section=name, hyperlink=hyperlink, tags=[])
                     for cre in cres:
                         cs.add_link(
