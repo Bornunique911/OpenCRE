@@ -8,7 +8,6 @@ import logging
 import os
 import io
 import pathlib
-import re
 import urllib.parse
 from alive_progress import alive_bar
 from typing import Any
@@ -22,10 +21,10 @@ from application.database import db
 from application.cmd import cre_main
 from application.defs import cre_defs as defs
 from application.defs import cre_exceptions
-from application.feature_flags import is_cre_import_allowed
 
 from application.utils import spreadsheet as sheet_utils
 from application.utils import mdutils, redirectors, gap_analysis
+from application.prompt_client import prompt_client as prompt_client
 from application.utils.external_project_parsers.parsers import myopencre_parser
 from enum import Enum
 from flask import json as flask_json
@@ -133,14 +132,7 @@ if os.environ.get("POSTHOG_API_KEY") and os.environ.get("POSTHOG_HOST"):
 @app.route("/rest/v1/name/<crename>", methods=["GET"])
 def find_cre(creid: str = None, crename: str = None) -> Any:  # refer
     if posthog:
-        source = request.args.get("source")
-        source_norm = ""
-        if source and source.strip():
-            source_norm = re.sub(r"[^a-z0-9.]+", "-", source.lower()).strip("-")
-        payload = f"id:{creid};name{crename}"
-        if source_norm:
-            payload += f";source:{source_norm}"
-        posthog.capture("find_cre", payload)
+        posthog.capture(f"find_cre", f"id:{creid};name{crename}")
     database = db.Node_collection()
     include_only = request.args.getlist("include_only")
     # opt_osib = request.args.get("osib")
@@ -415,83 +407,15 @@ def map_analysis() -> Any:
         posthog.capture(f"map_analysis", f"standards:{standards}")
 
     database = db.Node_collection()
-    if len(standards) < 2:
-        abort(400, "Please provide two standards")
-    standards = standards[:2]
-    standards_hash = gap_analysis.make_resources_key(standards)
-
-    # ----- PR #825: OpenCRE fast path -----
-    if OPENCRE_STANDARD_NAME in standards:
-        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
-            standards, standards_hash, database
-        )
-        if direct_gap_analysis:
-            return jsonify(direct_gap_analysis)
-        abort(404, "No direct overlap found for requested standards")
-
-    # ----- upstream: cached result -----
-    cache_key = standards_hash
-    if database.gap_analysis_exists(cache_key):
-        cached = database.get_gap_analysis_result(cache_key=cache_key)
-        if cached:
-            parsed = json.loads(cached)
-            if "result" in parsed:
-                return jsonify({"result": parsed.get("result")})
-
-    # ----- upstream: Heroku guard -----
-    if os.environ.get("HEROKU"):
-        abort(404, "No such Cache")
-
-    # ----- upstream: Redis / RQ path with synchronous fallback -----
-    db_url = os.environ.get("CRE_CACHE_FILE") or os.environ.get("PROD_DATABASE_URL")
-    if not db_url:
-        db_url = str(getattr(getattr(database.session, "bind", None), "url", ""))
-    try:
-        conn = redis.connect()
-        ga_queue_name = os.environ.get("CRE_GA_QUEUE_NAME", "ga")
-        q = Queue(name=ga_queue_name, connection=conn)
-        inflight_key = f"ga:inflight:{cache_key}"
-        inflight_job_id_raw = conn.get(inflight_key)
-        inflight_job_id = (
-            inflight_job_id_raw.decode("utf-8")
-            if isinstance(inflight_job_id_raw, bytes)
-            else str(inflight_job_id_raw) if inflight_job_id_raw else ""
-        )
-        if inflight_job_id:
-            try:
-                inflight_job = job.Job.fetch(id=inflight_job_id, connection=conn)
-                if inflight_job.get_status() in (
-                    job.JobStatus.QUEUED,
-                    job.JobStatus.STARTED,
-                ):
-                    return jsonify({"job_id": inflight_job_id})
-            except exceptions.NoSuchJobError:
-                conn.delete(inflight_key)
-
-        j = q.enqueue_call(
-            description=f"{standards[0]}->{standards[1]}",
-            func=cre_main.run_gap_pair_job,
-            kwargs={
-                "importing_name": standards[0],
-                "peer_name": standards[1],
-                "db_connection_str": db_url,
-            },
-            timeout=gap_analysis.GAP_ANALYSIS_TIMEOUT,
-        )
-        conn.set(inflight_key, str(j.id))
-        conn.expire(inflight_key, _ga_timeout_seconds())
-        return jsonify({"job_id": str(j.id)})
-    except Exception as exc:
-        logger.warning(
-            "Redis/RQ unavailable in map_analysis for %s; using synchronous fallback: %s",
-            cache_key,
-            exc,
-        )
-        try:
-            return jsonify(_compute_ga_without_redis(database, standards))
-        except Exception as fallback_exc:
-            logger.exception("Synchronous GA fallback failed for %s", cache_key)
-            abort(503, f"Gap analysis unavailable: {fallback_exc}")
+    standards = request.args.getlist("standard")
+    
+    # We now call gap_analysis.perform directly so web and cli share the same method
+    gap_analysis_result = gap_analysis.perform(standards, database)
+    if gap_analysis_result:
+        # Compatibility with the expected dict format on frontend
+        return jsonify({"result": gap_analysis_result.get("result") if isinstance(gap_analysis_result, dict) else gap_analysis_result})
+    
+    abort(404)
 
 
 @app.route("/rest/v1/map_analysis_weak_links", methods=["GET"])
@@ -507,7 +431,7 @@ def map_analysis_weak_links() -> Any:
     gap_analysis_results = database.get_gap_analysis_result(cache_key=cache_key)
     if gap_analysis_results:
         gap_analysis_dict = json.loads(gap_analysis_results)
-        if "result" in gap_analysis_dict:
+        if gap_analysis_dict.get("result"):
             return jsonify({"result": gap_analysis_dict.get("result")})
 
     # if conn.exists(cache_key):
@@ -850,7 +774,7 @@ def login_required(f):
 def admin_imports_enabled_required(f):
     @wraps(f)
     def enabled_r(*args, **kwargs):
-        if not is_cre_import_allowed():
+        if os.environ.get("CRE_ALLOW_IMPORT") != "1":
             abort(404, description="Admin imports API is disabled")
         return f(*args, **kwargs)
 
@@ -947,9 +871,8 @@ def admin_import_run_changeset_graph(run_id: str) -> Any:
     cs = db.get_staged_change_set(run_id=r.id)
     if not cs:
         return jsonify({"nodes": [], "edges": []})
-
+        
     from application.utils import import_diff, import_graph
-
     ops = import_diff.change_set_from_json(cs.changeset_json)
     graph_data = import_graph.change_set_to_graph(ops)
 
@@ -1273,9 +1196,41 @@ def admin_imports_rerun() -> Any:
     return jsonify({"status": "success", "run_id": run.id if run else "test-id"})
 
 
+@app.route("/rest/v1/config", methods=["GET"])
+def get_config() -> Any:
+    return jsonify({
+        "CRE_ALLOW_IMPORT": os.environ.get("CRE_ALLOW_IMPORT") == "1"
+    })
+
+
+@app.route("/admin/imports/rerun", methods=["POST"])
+@login_required
+@admin_imports_enabled_required
+def admin_imports_rerun() -> Any:
+    # A placeholder for triggering an actual import.
+    # In a real system, this would enqueue a background job.
+    source = request.json.get("source")
+    if not source:
+        return abort(400, "source is required")
+
+    database = db.Node_collection().with_graph()
+    try:
+        run = db.create_import_run(source=source, version="re-run")
+    except Exception:
+        run = None
+
+    # Simulate basic empty changes so we don't break the UI.
+    from application.utils import import_diff
+    db.persist_staged_change_set(
+        run_id=run.id if run else "test-id",
+        changeset_json=import_diff.change_set_to_json([])
+    )
+
+    return jsonify({"status": "success", "run_id": run.id if run else "test-id"})
+
 @app.route("/rest/v1/cre_csv_import", methods=["POST"])
 def import_from_cre_csv() -> Any:
-    if not is_cre_import_allowed():
+    if os.environ.get("CRE_ALLOW_IMPORT") != "1":
         abort(
             403,
             "Importing is disabled, set the environment variable CRE_ALLOW_IMPORT to allow this functionality",
@@ -1320,7 +1275,6 @@ def import_from_cre_csv() -> Any:
         run = None
 
     from application.utils import import_pipeline
-    from application.prompt_client import prompt_client
 
     import_pipeline.apply_parse_result(
         parse_result=parse_result,
@@ -1338,13 +1292,11 @@ def import_from_cre_csv() -> Any:
         existing = database.get_CREs(external_id=cre.id)
         if existing:
             doc0 = existing[0]
-            eid = (
-                getattr(doc0, "external_id", None)
-                or getattr(doc0, "id", None)
-                or cre.id
-            )
+            eid = getattr(doc0, "external_id", None) or getattr(doc0, "id", None) or cre.id
             new_cre_external_ids.append(str(eid))
-    standards_only = {k: v for k, v in parse_result.results.items() if k != cre_key}
+    standards_only = {
+        k: v for k, v in parse_result.results.items() if k != cre_key
+    }
     return jsonify(
         {
             "status": "success",

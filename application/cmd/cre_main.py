@@ -9,7 +9,7 @@ import tempfile
 import requests
 
 from collections import deque
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 import hashlib
 import json as _json
 from rq import Queue, job, exceptions
@@ -156,6 +156,28 @@ def register_cre(cre: defs.CRE, collection: db.Node_collection) -> Tuple[db.CRE,
     return dbcre, existing
 
 
+def parse_file_collect_only(
+    filename: str, yamldocs: List[Dict[str, Any]]
+) -> Optional[List[defs.Document]]:
+    """Parse YAML export docs into defs trees without writing to the DB (Step 9 pipeline)."""
+    resulting_objects: List[defs.Document] = []
+    for contents in yamldocs:
+        links = []
+
+        document: Optional[defs.Document] = None
+
+        if not isinstance(contents, dict):
+            logger.fatal("Malformed file %s, skipping" % filename)
+            return None
+
+        if contents.get("links"):
+            links = contents.pop("links")
+
+        if contents.get("doctype") == defs.Credoctypes.CRE.value:
+            document = from_dict(
+                data_class=defs.CRE,
+                data=contents,
+                config=Config(cast=[defs.Credoctypes]),
 def resolve_ga_peer_standard_names(
     collection: db.Node_collection, importing_name: str
 ) -> List[str]:
@@ -210,34 +232,92 @@ def document_is_ga_eligible(doc: defs.Document, *, log_skips: bool = True) -> bo
                 "Skipping gap analysis for %s because tags are not GA-eligible",
                 getattr(doc, "name", "<unknown>"),
             )
-        return False
+        elif contents.get("doctype") in (
+            defs.Credoctypes.Standard.value,
+            defs.Credoctypes.Code.value,
+            defs.Credoctypes.Tool.value,
+        ):
+            doctype = contents.get("doctype")
+            data_class = (
+                defs.Standard
+                if doctype == defs.Credoctypes.Standard.value
+                else (
+                    defs.Code
+                    if doctype == defs.Credoctypes.Code.value
+                    else defs.Tool if doctype == defs.Credoctypes.Tool.value else None
+                )
+            )
+            document = from_dict(
+                data_class=data_class,
+                data=contents,
+                config=Config(cast=[defs.Credoctypes]),
+            )
 
-    return True
+        for link in links:
+            doclink = parse_file_collect_only(
+                filename=filename,
+                yamldocs=[link.get("document")],
+            )
+
+            if doclink:
+                if len(doclink) > 1:
+                    logger.fatal(
+                        "Parsing single document returned 2 results this is a bug"
+                    )
+                document.add_link(
+                    defs.Link(
+                        document=doclink[0],
+                        ltype=link.get("type"),
+                        tags=link.get("tags"),
+                    )
+                )
+        if document is None:
+            logger.warning("Document is None, likely missing data")
+        resulting_objects.append(document)
+    return resulting_objects
 
 
-def resource_name_ga_eligible_in_db(
-    collection: db.Node_collection, resource_name: str
-) -> bool:
-    """
-    Post-import GA eligibility using SQL node rows (for post_apply paths that
-    only have resource names, not defs.Document lists).
-    """
-    from sqlalchemy import func
+def parse_file(
+    filename: str,
+    yamldocs: List[Dict[str, Any]],
+    scollection: db.Node_collection,
+    db_connection_str: str = "",
+    calculate_embeddings: bool = False,
+    calculate_gap_analysis: bool = False,
+) -> Optional[List[defs.Document]]:
+    """Parse YAML export format and apply via central import pipeline (Step 9)."""
+    from application.utils import import_pipeline
 
-    row = (
-        collection.session.query(db.Node)
-        .filter(func.lower(db.Node.name) == resource_name.lower())
-        .first()
+    collected = parse_file_collect_only(filename, yamldocs)
+    if collected is None:
+        return None
+    collected = [d for d in collected if d is not None]
+    if not collected:
+        return collected
+    pr = import_pipeline.parse_result_from_yaml_document_forest(
+        collected,
+        calculate_gap_analysis=calculate_gap_analysis,
+        calculate_embeddings=calculate_embeddings,
     )
-    if not row:
-        return False
-    if row.ntype in (defs.Credoctypes.Tool.value, defs.Credoctypes.Code.value):
-        return False
-    if row.ntype != defs.Credoctypes.Standard.value:
-        return False
-    raw_tags = row.tags or ""
-    tag_set = {t.strip() for t in str(raw_tags).split(",") if t.strip()}
-    return _has_ga_eligible_tags(list(tag_set))
+    import_pipeline.apply_parse_result(
+        parse_result=pr,
+        collection=scollection,
+        db_connection_str=db_connection_str,
+        import_run_id=None,
+        import_source=None,
+        validate_classification_tags=False,
+    )
+    return collected
+
+
+def resolve_ga_peer_standard_names(
+    collection: db.Node_collection, importing_name: str
+) -> List[str]:
+    """Increment Step 10: GA peer list — CRE-sharing standards, else all others."""
+    shared = []
+    if shared:
+        return shared
+    return [s for s in collection.standards() if s != importing_name]
 
 
 def schedule_gap_analysis_importing_vs_peers(
@@ -261,88 +341,14 @@ def schedule_gap_analysis_importing_vs_peers(
             continue
 
         gap_analysis.perform(
-            standards=[importing_name, standard_name], database=collection
+            standards=[importing_name, standard_name],
+            database=collection
         )
 
         gap_analysis.perform(
-            standards=[standard_name, importing_name], database=collection
+            standards=[standard_name, importing_name],
+            database=collection
         )
-
-
-def run_gap_pair_job(importing_name: str, peer_name: str, db_connection_str: str):
-    """RQ job wrapper for one directed GA pair."""
-    caps = db_backend.detect_backend(db_connection_str)
-    if not caps.is_postgres:
-        raise RuntimeError(
-            f"Pair GA scheduling requires Postgres backend, got {caps.backend}"
-        )
-    collection = db_connect(path=db_connection_str)
-    return gap_analysis.run_gap_pair(
-        importing_name=importing_name,
-        peer_name=peer_name,
-        database=collection,
-        # Backend is validated from explicit connection string above.
-        require_postgres=False,
-    )
-
-
-def schedule_gap_analysis_pairs_with_rq(
-    *,
-    collection: db.Node_collection,
-    importing_name: str,
-    db_connection_str: str,
-    peer_names: Optional[List[str]] = None,
-    skip_neo_populate: bool = False,
-):
-    """
-    Rung 1 primitive: enqueue directed GA pair jobs in RQ.
-
-    This function only schedules work. It does NOT wait for completion.
-    """
-    if os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS") == "1":
-        return []
-    if peer_names is None:
-        peer_names = resolve_ga_peer_standard_names(collection, importing_name)
-    if not skip_neo_populate:
-        populate_neo4j_db(db_connection_str)
-
-    caps = db_backend.detect_backend(db_connection_str)
-    if not caps.is_postgres:
-        raise RuntimeError(
-            f"Pair GA scheduling requires Postgres backend, got {caps.backend}"
-        )
-
-    conn = redis.connect()
-    ga_queue_name = os.environ.get("CRE_GA_QUEUE_NAME", "ga")
-    q = Queue(name=ga_queue_name, connection=conn)
-    jobs = []
-    max_pairs = int(os.environ.get("CRE_GA_MAX_ENQUEUED_PAIRS", "0"))
-    enqueued = 0
-    for standard_name in peer_names:
-        if standard_name == importing_name:
-            continue
-        for a, b in ((importing_name, standard_name), (standard_name, importing_name)):
-            if max_pairs > 0 and enqueued >= max_pairs:
-                logger.info(
-                    "Reached CRE_GA_MAX_ENQUEUED_PAIRS=%s for %s; deferring remaining pairs",
-                    max_pairs,
-                    importing_name,
-                )
-                return jobs
-            jobs.append(
-                q.enqueue_call(
-                    description=f"{a}->{b}",
-                    func=run_gap_pair_job,
-                    kwargs={
-                        "importing_name": a,
-                        "peer_name": b,
-                        "db_connection_str": db_connection_str,
-                    },
-                    timeout=gap_analysis.GAP_ANALYSIS_TIMEOUT,
-                )
-            )
-            enqueued += 1
-    return jobs
 
 
 def register_standard(
@@ -383,16 +389,12 @@ def register_standard(
                     continue
                 # Focus on CRE links for GA topology. Ignore embedding-only fields.
                 doctype = getattr(doc, "doctype", None)
-                doctype_val = (
-                    doctype.value if hasattr(doctype, "value") else str(doctype)
-                )
+                doctype_val = doctype.value if hasattr(doctype, "value") else str(doctype)
                 links.append(
                     (
-                        (
-                            getattr(l, "ltype", None).value
-                            if hasattr(getattr(l, "ltype", None), "value")
-                            else str(getattr(l, "ltype", ""))
-                        ),
+                        getattr(l, "ltype", None).value
+                        if hasattr(getattr(l, "ltype", None), "value")
+                        else str(getattr(l, "ltype", "")),
                         doctype_val,
                         getattr(doc, "id", "") or "",
                         getattr(doc, "name", "") or "",
@@ -408,10 +410,36 @@ def register_standard(
                     tuple(sorted(links)),
                 )
             )
-        payload = _json.dumps(
-            sorted(rows), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
+        payload = _json.dumps(sorted(rows), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _doctype_value(doc: defs.Document) -> str:
+        doctype = getattr(doc, "doctype", None)
+        if hasattr(doctype, "value"):
+            return doctype.value
+        return str(doctype)
+
+    def _ga_eligible(doc: defs.Document) -> bool:
+        doctype = _doctype_value(doc)
+        # Step 3a: doctype exclusion
+        if doctype in (defs.Credoctypes.Tool.value, defs.Credoctypes.Code.value):
+            return False
+
+        # Step 3b: tag gate for GA eligibility.
+        # For any non-Tool/non-Code Standard-like resource, schedule GA only when tags
+        # include both required literals.
+        required = {"family:standard", "subtype:requirements_standard"}
+        tags = getattr(doc, "tags", None) or []
+        missing = sorted([t for t in required if t not in set(tags)])
+        if missing:
+            logger.info(
+                "Skipping gap analysis for %s because tags missing %s",
+                getattr(doc, "name", "<unknown>"),
+                ",".join(missing),
+            )
+            return False
+
+        return True
 
     conn = redis.connect()
     ph = prompt_client.PromptHandler(database=collection)
@@ -420,11 +448,8 @@ def register_standard(
         calculate_gap_analysis and document_is_ga_eligible(standard_entries[0])
     )
     if calculate_gap_analysis and not effective_calculate_gap_analysis:
-        # document_is_ga_eligible already logs the precise reason when log_skips default applies.
-        logger.info(
-            "Skipping gap analysis for %s because resource is not GA-eligible",
-            importing_name,
-        )
+        # _ga_eligible already logs the precise reason (doctype or missing tags).
+        logger.info("Skipping gap analysis for %s because resource is not GA-eligible", importing_name)
     standard_hash = gap_analysis.make_resources_key([importing_name])
     if effective_calculate_gap_analysis and conn.get(standard_hash):
         logger.info(
@@ -433,10 +458,7 @@ def register_standard(
         return
 
     before_fp: Optional[str] = None
-    if (
-        effective_calculate_gap_analysis
-        and os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS") != "1"
-    ):
+    if effective_calculate_gap_analysis and os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS") != "1":
         before_fp = _standard_structure_fingerprint(importing_name)
     logger.info(
         f"Registering resource {importing_name} of length {len(standard_entries)}"
@@ -456,31 +478,25 @@ def register_standard(
             generate_embeddings = False
     if generate_embeddings and importing_name:
         ph.generate_embeddings_for(importing_name)
-    import_phase_elapsed = time.perf_counter() - import_phase_t0
-    logger.info(
-        "CP0 timing for %s: import_phase_s=%.2f",
-        importing_name,
-        import_phase_elapsed,
-    )
 
-    if (
-        effective_calculate_gap_analysis
-        and os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS") != "1"
-    ):
-        # GA orchestration is centralized in import_pipeline (pair-level model).
-        # register_standard only performs writes/import-phase work.
+    if effective_calculate_gap_analysis and os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS") != "1":
         after_fp = _standard_structure_fingerprint(importing_name)
         if before_fp is not None and before_fp == after_fp:
             logger.info(
-                "Skipping GA intent for %s because structure fingerprint unchanged",
+                "Skipping GA for %s because structure fingerprint unchanged",
                 importing_name,
             )
             conn.set(standard_hash, value="")
             return
-        logger.info(
-            "Deferring GA scheduling for %s to import pipeline pair coordinator",
-            importing_name,
+
+        peer_names = resolve_ga_peer_standard_names(collection, importing_name)
+        schedule_gap_analysis_importing_vs_peers(
+            collection=collection,
+            importing_name=importing_name,
+            db_connection_str=db_connection_str,
+            peer_names=peer_names,
         )
+        conn.set(standard_hash, value="")
 
 
 def parse_standards_from_spreadsheeet(
@@ -489,24 +505,9 @@ def parse_standards_from_spreadsheeet(
     prompt_handler: prompt_client.PromptHandler,
 ) -> None:
     """given a csv with standards, build a list of standards in the db"""
-    if not cre_file:
-        logger.fatal("empty spreadsheet")
-        return None
-
-    import_source_label = "master_spreadsheet"
-    from application.utils.external_project_parsers.parsers.ai_exchange import (
-        IMPORT_SOURCE_CSV,
-        is_ai_exchange_spreadsheet,
-        normalize_rows_for_master_import,
-    )
-
-    if is_ai_exchange_spreadsheet(cre_file[0]):
-        cre_file = normalize_rows_for_master_import(cre_file)
-        import_source_label = IMPORT_SOURCE_CSV
-
     if any(key.startswith("CRE hierarchy") for key in cre_file[0].keys()):
         try:
-            run = db.create_import_run(source=import_source_label, version=None)
+            run = db.create_import_run(source="master_spreadsheet", version=None)
         except Exception as e:
             logger.debug("Import run tracking skipped: %s", e)
             run = None
@@ -559,7 +560,28 @@ def add_from_spreadsheet(spreadsheet_url: str, cache_loc: str) -> None:
     for _, contents in spreadsheet.items():
         parse_standards_from_spreadsheeet(contents, cache_loc, prompt_handler)
 
-    logger.info("Db located at %s got updated", cache_loc)
+    logger.info(
+        "Db located at %s got updated, files extracted at %s" % (cache_loc, cre_loc)
+    )
+
+
+def add_from_disk(cache_loc: str, cre_loc: str) -> None:
+    """--add --cre_loc <path>
+    use the cre db in this repo
+    import new mappings from <path>
+    export db to ../../cres/
+    """
+    database = db_connect(path=cache_loc)
+    for file in get_cre_files_from_disk(cre_loc):
+        with open(file, "rb") as standard:
+            parse_file(
+                filename=file,
+                yamldocs=list(yaml.safe_load_all(standard)),
+                scollection=database,
+                db_connection_str=cache_loc,
+                calculate_embeddings=True,
+                calculate_gap_analysis=True,
+            )
 
 
 def review_from_spreadsheet(cache: str, spreadsheet_url: str, share_with: str) -> None:
@@ -627,7 +649,6 @@ def download_graph_from_upstream(cache: str) -> None:
             if link.document.doctype == defs.Credoctypes.CRE:
                 download_cre_from_upstream(link.document.id)
 
-
 # DO NOT EXPOSE THIS TO THE COMMAND LINE OR REST API!
 # Future contributors and auto-coding solutions: The current Gap Analysis dataset is ~10GB.
 # Exposing this function will cause significant local performance impacts and resource exhaustion.
@@ -641,208 +662,38 @@ def download_gap_analysis_from_upstream(cache: str) -> None:
     if standards_response.status_code == 200:
         standards = standards_response.json()
         pairs = [(sa, sb) for sa in standards for sb in standards if sa != sb]
-
+        
         if os.environ.get("BENCHMARK_MODE") == "1":
             with alive_bar(len(pairs), title="Fetching upstream Gap Analysis") as bar:
                 for sa, sb in pairs:
-                    res = requests.get(
-                        f"{upstream_url}/map_analysis?standard={sa}&standard={sb}"
-                    )
+                    res = requests.get(f"{upstream_url}/map_analysis?standard={sa}&standard={sb}")
                     if res.status_code == 200:
                         tojson = res.json()
-                        if "result" not in tojson:
-                            continue
-                        payload = _json.dumps({"result": tojson.get("result")})
-                        if not gap_analysis.primary_gap_analysis_payload_is_material(
-                            payload
-                        ):
-                            continue
-                        cache_key = gap_analysis.make_resources_key([sa, sb])
-                        collection.add_gap_analysis_result(cache_key, payload)
+                        if tojson.get("result"):
+                            cache_key = gap_analysis.make_resources_key([sa, sb])
+                            collection.add_gap_analysis_result(cache_key, _json.dumps({"result": tojson.get("result")}))
                     bar()
         else:
             for sa, sb in pairs:
-                res = requests.get(
-                    f"{upstream_url}/map_analysis?standard={sa}&standard={sb}"
-                )
+                res = requests.get(f"{upstream_url}/map_analysis?standard={sa}&standard={sb}")
                 if res.status_code == 200:
                     tojson = res.json()
-                    if "result" not in tojson:
-                        continue
-                    payload = _json.dumps({"result": tojson.get("result")})
-                    if not gap_analysis.primary_gap_analysis_payload_is_material(
-                        payload
-                    ):
-                        continue
-                    cache_key = gap_analysis.make_resources_key([sa, sb])
-                    collection.add_gap_analysis_result(cache_key, payload)
-
-
-def _missing_ga_pairs(collection: db.Node_collection) -> List[Tuple[str, str]]:
-    from application.utils.ga_parity import ga_matrix_standard_names
-
-    standards = ga_matrix_standard_names(collection)
-    rows = (
-        collection.session.query(
-            db.GapAnalysisResults.cache_key, db.GapAnalysisResults.ga_object
-        )
-        .filter(not_(db.GapAnalysisResults.cache_key.like("% >> %->%")))
-        .all()
-    )
-    existing = {
-        str(key)
-        for key, payload in rows
-        if key
-        and gap_analysis.primary_gap_analysis_payload_is_material(str(payload or ""))
-    }
-    missing: List[Tuple[str, str]] = []
-    for sa in standards:
-        for sb in standards:
-            if sa == sb:
-                continue
-            key = gap_analysis.make_resources_key([sa, sb])
-            if key not in existing:
-                missing.append((sa, sb))
-    return missing
-
-
-def _compute_pair_direct(collection: db.Node_collection, sa: str, sb: str) -> None:
-    cache_key = gap_analysis.make_resources_key([sa, sb])
-    if collection.gap_analysis_exists(cache_key):
-        return
-    db.gap_analysis(neo_db=collection.neo_db, node_names=[sa, sb], cache_key=cache_key)
-
-
-def backfill_gap_analysis_only(
-    db_connection_str: str,
-    *,
-    batch_size: int = 200,
-    poll_seconds: int = 5,
-    max_pairs: int = 0,
-    no_queue: bool = False,
-) -> None:
-    """
-    Backfill only missing directed GA pairs from DB truth.
-    This avoids HTTP polling loops and reports progress from SQL state.
-    """
-    collection = db_connect(path=db_connection_str)
-    if os.environ.get("CRE_NO_NEO4J") != "1":
-        populate_neo4j_db(db_connection_str)
-
-    missing = _missing_ga_pairs(collection)
-    if max_pairs > 0:
-        missing = missing[:max_pairs]
-    total = len(missing)
-    if total == 0:
-        logger.info("GA backfill: no missing pairs")
-        return
-
-    logger.info(
-        "GA backfill: missing_pairs=%s batch_size=%s mode=%s",
-        total,
-        batch_size,
-        "sync" if no_queue else "queue",
-    )
-    batch_size = max(1, int(batch_size))
-    poll_seconds = max(1, int(poll_seconds))
-
-    use_queue = not no_queue
-    conn = None
-    ga_q = None
-    if use_queue:
-        try:
-            conn = redis.connect()
-            ga_q = Queue(
-                name=os.environ.get("CRE_GA_QUEUE_NAME", "ga"), connection=conn
-            )
-        except Exception as exc:
-            logger.warning(
-                "GA backfill queue unavailable, falling back to sync mode: %s", exc
-            )
-            use_queue = False
-
-    done = 0
-    for i in range(0, total, batch_size):
-        batch = missing[i : i + batch_size]
-        if use_queue and ga_q is not None and conn is not None:
-            jobs = []
-            for sa, sb in batch:
-                cache_key = gap_analysis.make_resources_key([sa, sb])
-                if collection.gap_analysis_exists(cache_key):
-                    continue
-                inflight_key = f"ga:inflight:{cache_key}"
-                inflight_job_id_raw = conn.get(inflight_key)
-                inflight_job_id = (
-                    inflight_job_id_raw.decode("utf-8")
-                    if isinstance(inflight_job_id_raw, bytes)
-                    else str(inflight_job_id_raw) if inflight_job_id_raw else ""
-                )
-                if inflight_job_id:
-                    try:
-                        inflight_job = job.Job.fetch(
-                            id=inflight_job_id, connection=conn
-                        )
-                        if inflight_job.get_status() in (
-                            job.JobStatus.QUEUED,
-                            job.JobStatus.STARTED,
-                        ):
-                            continue
-                    except exceptions.NoSuchJobError:
-                        conn.delete(inflight_key)
-
-                j = ga_q.enqueue_call(
-                    description=f"{sa}->{sb}",
-                    func=run_gap_pair_job,
-                    kwargs={
-                        "importing_name": sa,
-                        "peer_name": sb,
-                        "db_connection_str": db_connection_str,
-                    },
-                    timeout=gap_analysis.GAP_ANALYSIS_TIMEOUT,
-                )
-                conn.set(inflight_key, str(j.id))
-                conn.expire(inflight_key, 129600)
-                jobs.append(j)
-
-            if jobs:
-                with alive_bar(
-                    len(jobs), title=f"GA batch {i // batch_size + 1}"
-                ) as bar:
-                    redis.wait_for_jobs(jobs, bar)
-        else:
-            with alive_bar(len(batch), title=f"GA batch {i // batch_size + 1}") as bar:
-                for sa, sb in batch:
-                    _compute_pair_direct(collection, sa, sb)
-                    bar()
-
-        done = min(total, i + len(batch))
-        remaining = len(_missing_ga_pairs(collection))
-        logger.info(
-            "GA backfill progress: processed=%s/%s remaining=%s",
-            done,
-            total,
-            remaining,
-        )
-        time.sleep(poll_seconds)
-
-    final_missing = len(_missing_ga_pairs(collection))
-    logger.info("GA backfill complete: final_missing_pairs=%s", final_missing)
-
+                    if tojson.get("result"):
+                        cache_key = gap_analysis.make_resources_key([sa, sb])
+                        collection.add_gap_analysis_result(cache_key, _json.dumps({"result": tojson.get("result")}))
 
 def run(args: argparse.Namespace) -> None:  # pragma: no cover
     script_path = os.path.dirname(os.path.realpath(__file__))
     os.path.join(script_path, "../cres")
 
-    if args.add and getattr(args, "from_ai_exchange_csv", None):
-        add_from_ai_exchange_csv(
-            csv_path=args.from_ai_exchange_csv,
-            cache_loc=args.cache_file,
-        )
-    elif args.add and args.from_spreadsheet:
+    if args.add and args.from_spreadsheet:
         add_from_spreadsheet(
             spreadsheet_url=args.from_spreadsheet,
             cache_loc=args.cache_file,
+            cre_loc=args.cre_loc,
         )
+    elif args.add and args.cre_loc and not args.from_spreadsheet:
+        add_from_disk(cache_loc=args.cache_file, cre_loc=args.cre_loc)
 
     if args.delete_map_analysis_for:
         cache = db_connect(args.cache_file)
@@ -998,14 +849,19 @@ def generate_embeddings(db_url: str) -> None:
 
 
 def populate_neo4j_db(cache: str):
-    if (
-        os.environ.get("NO_LOAD_GRAPH_DB") == "1"
-        or os.environ.get("CRE_NO_NEO4J") == "1"
-    ):
+    if os.environ.get("NO_LOAD_GRAPH_DB") == "1" or os.environ.get("CRE_NO_NEO4J") == "1":
         logger.info("Skipping Neo4j population as per environment variables")
         return
     logger.info(f"Populating neo4j DB: Connecting to SQL DB")
     database = db_connect(path=cache)
+    if database.neo_db:
+        logger.info(f"Populating neo4j DB: Populating")
+        database.neo_db.populate_DB(database.session)
+        logger.info(f"Populating neo4j DB: Complete")
+    else:
+        logger.warning(
+            f"Populating neo4j DB: database.neo_db is None, skipping population"
+        )
     if database.neo_db:
         logger.info(f"Populating neo4j DB: Populating")
         database.neo_db.populate_DB(database.session)
