@@ -428,58 +428,14 @@ def map_analysis() -> Any:
 
     database = db.Node_collection()
     standards = request.args.getlist("standard")
-    standards_hash = gap_analysis.make_resources_key(standards)
-
-    if OPENCRE_STANDARD_NAME in standards:
-        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
-            standards, standards_hash, database
-        )
-        if direct_gap_analysis:
-            return jsonify(direct_gap_analysis)
-        abort(404, "No direct overlap found for requested standards")
-
-    # First, check if we have cached results in the database
-    if database.gap_analysis_exists(standards_hash):
-        gap_analysis_result = database.get_gap_analysis_result(standards_hash)
-        if gap_analysis_result:
-            return jsonify(flask_json.loads(gap_analysis_result))
-
-    # On Heroku (read-only), check if standards exist before attempting Redis/queue operations
-    is_heroku = os.environ.get("DYNO") is not None
-    if is_heroku:
-        # Check if all requested standards exist
-        try:
-            existing_standards = database.standards()
-            if isinstance(existing_standards, (list, tuple, set)):
-                existing_lower = {str(s).lower() for s in existing_standards}
-                missing = [s for s in standards if str(s).lower() not in existing_lower]
-                if missing:
-                    logger.info(
-                        f"On Heroku: gap analysis request {standards_hash} references "
-                        f"standards that do not exist: {', '.join(missing)}, returning 404"
-                    )
-                    abort(
-                        404, f"One or more standards do not exist: {', '.join(missing)}"
-                    )
-        except Exception as exc:
-            # If we can't verify standards, log but don't fail (defensive)
-            logger.warning(f"Could not verify standards existence on Heroku: {exc}")
-
-    # If calculations are disabled, return 404
-    if os.environ.get("CRE_NO_CALCULATE_GAP_ANALYSIS"):
-        logger.info(
-            f"Gap analysis calculations are disabled by CRE_NO_CALCULATE_GAP_ANALYSIS; "
-            f"refusing to schedule new job for {standards_hash}"
-        )
-        abort(404, "Gap analysis calculations are disabled")
-
-    # Now call schedule() which will handle Redis/queue operations
-    gap_analysis_dict = gap_analysis.schedule(standards, database)
-    if "result" in gap_analysis_dict:
-        return jsonify(gap_analysis_dict)
-    if gap_analysis_dict.get("error"):
-        abort(404)
-    return jsonify({"job_id": gap_analysis_dict.get("job_id")})
+    
+    # We now call gap_analysis.perform directly so web and cli share the same method
+    gap_analysis_result = gap_analysis.perform(standards, database)
+    if gap_analysis_result:
+        # Compatibility with the expected dict format on frontend
+        return jsonify({"result": gap_analysis_result.get("result") if isinstance(gap_analysis_result, dict) else gap_analysis_result})
+    
+    abort(404)
 
 
 @app.route("/rest/v1/map_analysis_weak_links", methods=["GET"])
@@ -1226,38 +1182,6 @@ def get_cre_csv() -> Any:
             mimetype="text/csv",
         )
     abort(404)
-
-
-@app.route("/rest/v1/config", methods=["GET"])
-def get_config() -> Any:
-    return jsonify({"CRE_ALLOW_IMPORT": is_cre_import_allowed()})
-
-
-@app.route("/admin/imports/rerun", methods=["POST"])
-@login_required
-@admin_imports_enabled_required
-def admin_imports_rerun() -> Any:
-    # A placeholder for triggering an actual import.
-    # In a real system, this would enqueue a background job.
-    source = request.json.get("source")
-    if not source:
-        return abort(400, "source is required")
-
-    database = db.Node_collection().with_graph()
-    try:
-        run = db.create_import_run(source=source, version="re-run")
-    except Exception:
-        run = None
-
-    # Simulate basic empty changes so we don't break the UI.
-    from application.utils import import_diff
-
-    db.persist_staged_change_set(
-        run_id=run.id if run else "test-id",
-        changeset_json=import_diff.change_set_to_json([]),
-    )
-
-    return jsonify({"status": "success", "run_id": run.id if run else "test-id"})
 
 
 @app.route("/rest/v1/config", methods=["GET"])
