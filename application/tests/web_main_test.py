@@ -7,8 +7,7 @@ import re
 import json
 import unittest
 import tempfile
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import redis
 import rq

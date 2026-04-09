@@ -12,7 +12,6 @@ from application.cmd import cre_main
 from application.database import db
 from application.prompt_client import prompt_client as prompt_client
 from application.utils import db_backend, gap_analysis, redis
-from application.utils import db_backend, gap_analysis, redis
 
 logger = logging.getLogger(__name__)
 
