@@ -64,8 +64,6 @@ def _fetch_rq_job(conn: Any, queue: Queue, job_id: str) -> Any:
         return Job.fetch(job_id, connection=conn, serializer=queue.serializer)
     except NoSuchJobError:
         return None
-
-
 # Only allow terminating IDs that look like Neo4j transaction ids (injection-safe).
 _TXN_ID_RE = re.compile(r"^neo4j-transaction-[A-Za-z0-9_-]+$")
 
@@ -76,7 +74,9 @@ def _import_all_default_database_uri() -> str:
         run_count = int(os.environ.get("RUN_COUNT", "1") or "1")
     except ValueError:
         run_count = 1
-    pg = os.environ.get("POSTGRES_URL", "postgresql://cre:password@127.0.0.1:5432/cre")
+    pg = os.environ.get(
+        "POSTGRES_URL", "postgresql://cre:password@127.0.0.1:5432/cre"
+    )
     if run_count > 1:
         return pg.strip()
     sqlite_path = REPO_ROOT / "standards_cache.sqlite"
@@ -112,16 +112,18 @@ def _maybe_init_sqlalchemy(app: Flask) -> None:
 
 
 def _dashboard_list_limit() -> int:
-    return max(
-        1, min(int(os.environ.get("CRE_IMPORT_DASHBOARD_MAX_LIST_ITEMS", "80")), 500)
-    )
+    return max(1, min(int(os.environ.get("CRE_IMPORT_DASHBOARD_MAX_LIST_ITEMS", "80")), 500))
 
 
 def _distinct_node_names_for_ntype(session: Any, ntype: str) -> list[str]:
     from application.database.db import Node
 
-    rows = session.query(Node.name).filter(Node.ntype == ntype).distinct().all()
-    return sorted({str(r[0]).strip() for r in rows if r[0] and str(r[0]).strip()})
+    rows = (
+        session.query(Node.name).filter(Node.ntype == ntype).distinct().all()
+    )
+    return sorted(
+        {str(r[0]).strip() for r in rows if r[0] and str(r[0]).strip()}
+    )
 
 
 def _distinct_resource_names_all(session: Any) -> list[str]:
@@ -155,12 +157,7 @@ def _distinct_names_per_ntype(session: Any) -> dict[str | None, int]:
 def ga_coverage_from_standards_and_keys(
     standard_names: list[str], primary_cache_keys: list[str]
 ) -> dict[str, Any]:
-    """Pure helper: expected directed GA pairs vs *material* primary cache keys.
-
-    ``primary_cache_keys`` must list only primary rows (no ``->`` subresource suffix)
-    whose ``ga_object`` has a non-empty ``result`` — empty ``{"result":{}}`` rows
-    are excluded upstream.
-    """
+    """Pure helper: expected directed GA pairs vs rows in gap_analysis_results (primary keys only)."""
     stds = sorted({str(s).strip() for s in standard_names if str(s).strip()})
     n = len(stds)
     expected: set[tuple[str, str]] = set()
@@ -189,12 +186,8 @@ def ga_coverage_from_standards_and_keys(
         "directed_pairs_missing": len(missing),
         "stale_pairs_in_storage": len(stale),
         "malformed_keys": malformed,
-        "sample_missing": [
-            f"{a} → {b}" for a, b in sorted(missing)[: _dashboard_list_limit()]
-        ],
-        "sample_stale": [
-            f"{a} → {b}" for a, b in sorted(stale)[: _dashboard_list_limit()]
-        ],
+        "sample_missing": [f"{a} → {b}" for a, b in sorted(missing)[: _dashboard_list_limit()]],
+        "sample_stale": [f"{a} → {b}" for a, b in sorted(stale)[: _dashboard_list_limit()]],
         "sample_covered": [
             f"{a} → {b}" for a, b in sorted(covered)[: min(20, _dashboard_list_limit())]
         ],
@@ -220,9 +213,7 @@ def _db_resources_and_ga_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
         session = sqla.session
         lim = _dashboard_list_limit()
 
-        standards = _distinct_node_names_for_ntype(
-            session, defs.Credoctypes.Standard.value
-        )
+        standards = _distinct_node_names_for_ntype(session, defs.Credoctypes.Standard.value)
         tools = _distinct_node_names_for_ntype(session, defs.Credoctypes.Tool.value)
         codes = _distinct_node_names_for_ntype(session, defs.Credoctypes.Code.value)
         all_names = _distinct_resource_names_all(session)
@@ -252,32 +243,19 @@ def _db_resources_and_ga_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
         # ``"{A} >> {B}->{neo_fragment}"``. Exclude those via `` >> … ->`` so we do
         # not drop legitimate primaries whose *left* standard name contains ``->``.
         rows = (
-            session.query(GapAnalysisResults.cache_key, GapAnalysisResults.ga_object)
+            session.query(GapAnalysisResults.cache_key)
             .filter(not_(GapAnalysisResults.cache_key.like("% >> %->%")))
             .all()
         )
-        from application.utils.gap_analysis import (
-            primary_gap_analysis_payload_is_material,
-        )
-
-        keys: list[str] = []
-        empty_primary_placeholders = 0
-        for ck, go in rows:
-            if not ck:
-                continue
-            payload = str(go or "")
-            if primary_gap_analysis_payload_is_material(payload):
-                keys.append(str(ck))
-            else:
-                empty_primary_placeholders += 1
+        keys = [str(r[0]) for r in rows if r[0]]
 
         gap_analysis_db: dict[str, Any] = {
             "ok": True,
-            "primary_cache_rows": len(rows),
-            "primary_cache_rows_material": len(keys),
-            "directed_pairs_empty_primary_placeholder_rows": empty_primary_placeholders,
+            "primary_cache_rows": len(keys),
         }
-        gap_analysis_db.update(ga_coverage_from_standards_and_keys(standards, keys))
+        gap_analysis_db.update(
+            ga_coverage_from_standards_and_keys(standards, keys)
+        )
 
         return resources_db, gap_analysis_db
     except Exception as exc:
@@ -467,9 +445,7 @@ def neo4j_orphan_gap_transactions(
         # If a GA job is started, assume this tx belongs to it (avoid false orphans).
         if not started_pairs:
             row = dict(tx)
-            row["orphan_reason"] = (
-                "GA-shaped query but no started GA jobs (likely crashed worker)"
-            )
+            row["orphan_reason"] = "GA-shaped query but no started GA jobs (likely crashed worker)"
             orphans.append(row)
     return orphans
 
@@ -532,7 +508,11 @@ def _neo4j_transactions() -> list[dict[str, str]]:
                         "elapsed": str(rec["elapsedTime"]),
                         "status": str(rec["status"]),
                         "query": str(rec["currentQuery"]).strip().replace("\n", " "),
-                        **({"parameters": pm} if pm is not None else {}),
+                        **(
+                            {"parameters": pm}
+                            if pm is not None
+                            else {}
+                        ),
                     }
                 )
         driver.close()
@@ -591,7 +571,11 @@ def _owner_processes_present() -> dict[str, Any]:
     except Exception:
         return {"count": 0, "samples": []}
     lines = [ln.strip() for ln in output.splitlines() if "python cre.py" in ln]
-    matches = [ln for ln in lines if any(p in ln for p in patterns)]
+    matches = [
+        ln
+        for ln in lines
+        if any(p in ln for p in patterns)
+    ]
     return {"count": len(matches), "samples": matches[:20]}
 
 
@@ -622,7 +606,9 @@ def _ga_pending_details(conn) -> list[dict[str, Any]]:
                     "description": (job.description or "").strip(),
                     "state": bucket,
                     "state_backend": (
-                        "rq:worker-running" if bucket == "started" else f"rq:{bucket}"
+                        "rq:worker-running"
+                        if bucket == "started"
+                        else f"rq:{bucket}"
                     ),
                     "age_seconds": age_s,
                     "age_hms": _fmt_age(age_s),
@@ -839,8 +825,8 @@ def create_app() -> Flask:
       if (gdb.ok) {
         gaDbHtml =
           `<div>Standards in DB: <b>${gdb.standards_count}</b> · Directed pairs (all ordered A≠B): <b>${gdb.directed_pairs_expected}</b></div>` +
-          `<div style="margin-top:6px;">With material GA cache (non-empty result): <b>${gdb.directed_pairs_with_result}</b> · Covered vs expected: <b>${gdb.directed_pairs_covered}</b> · <span style="color:#f0c674">Missing: <b>${gdb.directed_pairs_missing}</b></span> · Stale (not in current standard set): <b>${gdb.stale_pairs_in_storage}</b> · Empty primary placeholders: <b>${gdb.directed_pairs_empty_primary_placeholder_rows ?? 0}</b></div>` +
-          `<div class="small">Primary cache rows scanned: ${gdb.primary_cache_rows} (${gdb.primary_cache_rows_material ?? gdb.directed_pairs_with_result} material) · Malformed keys: ${gdb.malformed_keys || 0}</div>` +
+          `<div style="margin-top:6px;">With GA row in DB: <b>${gdb.directed_pairs_with_result}</b> · Covered vs expected: <b>${gdb.directed_pairs_covered}</b> · <span style="color:#f0c674">Missing: <b>${gdb.directed_pairs_missing}</b></span> · Stale (not in current standard set): <b>${gdb.stale_pairs_in_storage}</b></div>` +
+          `<div class="small">Primary cache keys scanned: ${gdb.primary_cache_rows} · Malformed keys: ${gdb.malformed_keys || 0}</div>` +
           `<div class="small" style="margin-top:8px;"><b>Sample missing pairs</b> (estimate remaining work)</div>` +
           `<div class="logs mono" style="max-height:120px;">${esc((gdb.sample_missing || []).join('\\n') || '—')}</div>` +
           `<div class="small" style="margin-top:8px;"><b>Sample covered</b></div>` +
@@ -937,7 +923,7 @@ def create_app() -> Flask:
   <div class="row">
     <div class="card" style="flex: 1 1 100%; min-width: 280px;">
       <h2>Gap analysis pair coverage (database)</h2>
-      <div class="small">Directed pairs use the same cache key as workers: <code>make_resources_key([A,B])</code> → <code>A &gt;&gt; B</code>. &quot;Missing&quot; = expected ordered pairs minus <em>material</em> primary caches (non-empty <code>result</code>); rows whose stored <code>result</code> is an empty object count as missing and appear as empty primary placeholders.</div>
+      <div class="small">Directed pairs use the same cache key as workers: <code>make_resources_key([A,B])</code> → <code>A &gt;&gt; B</code>. &quot;Missing&quot; = expected ordered pairs among current standards minus rows in <code>gap_analysis_results</code> (primary keys only).</div>
       <div id="ga_db" style="margin-top:8px;"></div>
     </div>
   </div>
@@ -1035,10 +1021,7 @@ def create_app() -> Flask:
         if isinstance(ids, str):
             ids = [ids]
         if not isinstance(ids, list):
-            return (
-                jsonify({"ok": False, "error": "transaction_ids must be a list"}),
-                400,
-            )
+            return jsonify({"ok": False, "error": "transaction_ids must be a list"}), 400
         out = terminate_neo4j_transactions(ids)
         code = 200 if out.get("ok") else 400
         return jsonify(out), code

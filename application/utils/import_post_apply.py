@@ -12,6 +12,7 @@ from application.cmd import cre_main
 from application.database import db
 from application.prompt_client import prompt_client as prompt_client
 from application.utils import db_backend, gap_analysis, redis
+from application.utils import db_backend, gap_analysis, redis
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +58,6 @@ def run_post_apply(
                 logger.warning("post-apply neo4j populate: %s", ex)
         ga_jobs = []
         for importing_name in names:
-            if not cre_main.resource_name_ga_eligible_in_db(coll, importing_name):
-                logger.info(
-                    "Skipping post-apply GA for %s (not GA-eligible)",
-                    importing_name,
-                )
-                continue
             try:
                 peers = cre_main.resolve_ga_peer_standard_names(coll, importing_name)
             except Exception as ex:

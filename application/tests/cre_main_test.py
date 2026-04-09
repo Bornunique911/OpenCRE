@@ -479,12 +479,14 @@ class TestMain(unittest.TestCase):
     @patch(
         "application.utils.external_project_parsers.parsers.master_spreadsheet_parser._load_existing_cre_identity_maps"
     )
+    @patch("application.utils.db_backend.detect_backend")
     @patch.object(prompt_client.PromptHandler, "generate_embeddings_for")
     @patch.object(main, "populate_neo4j_db")
     def test_parse_standards_from_spreadsheeet(
         self,
         mock_populate_neo4j_db,
         mock_generate_embeddings_for,
+        mock_detect_backend,
         mock_load_existing_identity_maps,
         mock_detect_backend,
         mock_redis_connect,
@@ -497,6 +499,12 @@ class TestMain(unittest.TestCase):
         prompt_handler = prompt_client.PromptHandler(database=self.collection)
         mock_db_connect.return_value = self.collection
         mock_load_existing_identity_maps.return_value = ({}, {})
+        mock_detect_backend.return_value = Mock(
+            is_postgres=True,
+            backend="postgres",
+            supports_pair_ga_scheduler=True,
+            reason="test",
+        )
         mock_detect_backend.return_value = Mock(
             is_postgres=True,
             backend="postgres",
@@ -546,6 +554,61 @@ class TestMain(unittest.TestCase):
             [],
             f"method parse_standards_from_spreadsheeet failed to process standards {','.join(expected_names)}",
         )
+
+    @patch.object(main.redis, "connect")
+    @patch.object(main.Queue, "enqueue_call")
+    @patch.object(main, "populate_neo4j_db")
+    @patch.object(main.db_backend, "detect_backend")
+    def test_schedule_gap_analysis_pairs_with_rq_enqueues_directed_pairs(
+        self,
+        detect_backend_mock,
+        populate_neo4j_mock,
+        enqueue_call_mock,
+        redis_connect_mock,
+    ) -> None:
+        detect_backend_mock.return_value = main.db_backend.BackendCapabilities(
+            backend="postgres",
+            is_postgres=True,
+            supports_pair_ga_scheduler=True,
+            reason="test",
+        )
+        redis_connect_mock.return_value = Mock()
+        enqueue_call_mock.return_value = Mock()
+
+        jobs = main.schedule_gap_analysis_pairs_with_rq(
+            collection=self.collection,
+            importing_name="CWE",
+            db_connection_str="postgresql://cre:password@127.0.0.1:5432/cre",
+            peer_names=["ASVS"],
+            skip_neo_populate=True,
+        )
+
+        self.assertEqual(2, len(jobs))
+        self.assertEqual(2, enqueue_call_mock.call_count)
+        descs = [c.kwargs.get("description") for c in enqueue_call_mock.call_args_list]
+        self.assertIn("CWE->ASVS", descs)
+        self.assertIn("ASVS->CWE", descs)
+        populate_neo4j_mock.assert_not_called()
+
+    @patch.object(main.db_backend, "detect_backend")
+    def test_schedule_gap_analysis_pairs_with_rq_rejects_sqlite(
+        self, detect_backend_mock
+    ) -> None:
+        detect_backend_mock.return_value = main.db_backend.BackendCapabilities(
+            backend="sqlite",
+            is_postgres=False,
+            supports_pair_ga_scheduler=False,
+            reason="test",
+        )
+
+        with self.assertRaises(RuntimeError):
+            main.schedule_gap_analysis_pairs_with_rq(
+                collection=self.collection,
+                importing_name="CWE",
+                db_connection_str="sqlite:///tmp.db",
+                peer_names=["ASVS"],
+                skip_neo_populate=True,
+            )
 
     @patch.object(main.redis, "connect")
     @patch.object(main.Queue, "enqueue_call")

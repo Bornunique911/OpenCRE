@@ -1,8 +1,9 @@
 import os
+import os
 import requests
 import time
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Any
 from application.utils import redis
 from flask import json as flask_json
 import json
@@ -124,13 +125,18 @@ def run_gap_pair(
         )
 
     standards = [importing_name, peer_name]
+    backend_name = _backend_name_from_database(database)
+    if require_postgres and backend_name not in ("postgresql", "postgres"):
+        raise RuntimeError(
+            f"Pair GA scheduling requires Postgres backend, got {backend_name or 'unknown'}"
+        )
+
+    standards = [importing_name, peer_name]
     standards_hash = make_resources_key(standards)
 
     # Fast path: cached in SQL, no Redis/lock needed.
     if database.gap_analysis_exists(standards_hash):
         res = database.get_gap_analysis_result(standards_hash)
-        if res is None:
-            return {"result": {}}
         return json.loads(res) if isinstance(res, str) else res
 
     conn = redis.connect()
@@ -166,9 +172,7 @@ def run_gap_pair(
             try:
                 logger.info(f"Calculating gap analysis for {standards_hash}")
                 db.gap_analysis(
-                    neo_db=database.neo_db,
-                    node_names=standards,
-                    cache_key=standards_hash,
+                    neo_db=database.neo_db, node_names=standards, cache_key=standards_hash,
                 )
                 res = database.get_gap_analysis_result(standards_hash)
                 if res is None:
