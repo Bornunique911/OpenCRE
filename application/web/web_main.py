@@ -55,6 +55,20 @@ OWASP_TOP10_2025_DATA_FILE = (
     / "data"
     / "owasp_top10_2025.json"
 )
+OWASP_KUBERNETES_TOP10_2022_DATA_FILE = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "utils"
+    / "external_project_parsers"
+    / "data"
+    / "owasp_kubernetes_top10_2022.json"
+)
+OWASP_KUBERNETES_TOP10_2025_DATA_FILE = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "utils"
+    / "external_project_parsers"
+    / "data"
+    / "owasp_kubernetes_top10_2025.json"
+)
 
 app = Blueprint(
     "web",
@@ -167,8 +181,10 @@ def _normalize_source_name(source: Any) -> str | None:
     return normalized_source[:64]
 
 
-def _load_owasp_top10_2025_entries() -> list[dict[str, str]]:
-    with OWASP_TOP10_2025_DATA_FILE.open("r", encoding="utf-8") as handle:
+def _load_ranked_standard_entries(
+    data_file: pathlib.Path,
+) -> list[dict[str, str]]:
+    with data_file.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -177,65 +193,95 @@ def _normalize_standard_name(standard: str) -> str:
     return STANDARD_NAME_ALIASES.get(normalized_standard.lower(), normalized_standard)
 
 
-def _build_owasp_top10_comparison(
-    standards: list[str], collection: db.Node_collection
-) -> dict[str, Any] | None:
-    requested = {str(standard).strip().lower() for standard in standards}
-    if requested != {"owasp top 10 2021", "owasp top 10 2025"}:
-        return None
-
-    top10_2021 = sorted(
-        collection.get_nodes(name="OWASP Top 10 2021"),
-        key=lambda node: node.sectionID or "",
-    )
-    if not top10_2021:
-        return None
-
-    top10_2025_nodes = sorted(
-        collection.get_nodes(name="OWASP Top 10 2025"),
-        key=lambda node: node.sectionID or "",
-    )
-    if top10_2025_nodes:
-        top10_2025 = [
-            {
-                "section_id": node.sectionID or "",
-                "section": node.section or "",
-                "hyperlink": node.hyperlink or "",
-            }
-            for node in top10_2025_nodes
-        ]
-    else:
-        top10_2025 = _load_owasp_top10_2025_entries()
-
-    top10_2021_by_rank = {
-        node.sectionID
-        or "": {
+def _standard_nodes_to_ranked_entries(
+    nodes: list[defs.Standard],
+) -> list[dict[str, str]]:
+    return [
+        {
             "section_id": node.sectionID or "",
             "section": node.section or "",
             "hyperlink": node.hyperlink or "",
         }
-        for node in top10_2021
+        for node in nodes
+    ]
+
+
+def _build_ranked_standard_comparison(
+    standards: list[str], collection: db.Node_collection
+) -> dict[str, Any] | None:
+    requested = {str(standard).strip().lower() for standard in standards}
+    if requested == {"owasp top 10 2021", "owasp top 10 2025"}:
+        left_standard = "OWASP Top 10 2021"
+        right_standard = "OWASP Top 10 2025"
+        left_nodes = sorted(
+            collection.get_nodes(name=left_standard),
+            key=lambda node: node.sectionID or "",
+        )
+        if not left_nodes:
+            return None
+        left_entries = _standard_nodes_to_ranked_entries(left_nodes)
+
+        right_nodes = sorted(
+            collection.get_nodes(name=right_standard),
+            key=lambda node: node.sectionID or "",
+        )
+        if right_nodes:
+            right_entries = _standard_nodes_to_ranked_entries(right_nodes)
+        else:
+            right_entries = _load_ranked_standard_entries(OWASP_TOP10_2025_DATA_FILE)
+    elif requested == {
+        KUBERNETES_TOP10_2022_STANDARD_NAME.lower(),
+        KUBERNETES_TOP10_2025_STANDARD_NAME.lower(),
+    }:
+        left_standard = KUBERNETES_TOP10_2022_STANDARD_NAME
+        right_standard = KUBERNETES_TOP10_2025_STANDARD_NAME
+        left_nodes = sorted(
+            collection.get_nodes(name=left_standard),
+            key=lambda node: node.sectionID or "",
+        )
+        right_nodes = sorted(
+            collection.get_nodes(name=right_standard),
+            key=lambda node: node.sectionID or "",
+        )
+        left_entries = (
+            _standard_nodes_to_ranked_entries(left_nodes)
+            if left_nodes
+            else _load_ranked_standard_entries(OWASP_KUBERNETES_TOP10_2022_DATA_FILE)
+        )
+        right_entries = (
+            _standard_nodes_to_ranked_entries(right_nodes)
+            if right_nodes
+            else _load_ranked_standard_entries(OWASP_KUBERNETES_TOP10_2025_DATA_FILE)
+        )
+    else:
+        return None
+
+    if not left_entries:
+        return None
+
+    left_by_rank = {
+        entry["section_id"]: entry for entry in left_entries if entry.get("section_id")
     }
-    top10_2025_by_rank = {
-        entry["section_id"]: entry for entry in top10_2025 if entry.get("section_id")
+    right_by_rank = {
+        entry["section_id"]: entry for entry in right_entries if entry.get("section_id")
     }
-    ranks = sorted(set(top10_2021_by_rank.keys()) | set(top10_2025_by_rank.keys()))
+    ranks = sorted(set(left_by_rank.keys()) | set(right_by_rank.keys()))
     comparison = []
     for rank in ranks:
-        item_2021 = top10_2021_by_rank.get(rank)
-        item_2025 = top10_2025_by_rank.get(rank)
+        left_entry = left_by_rank.get(rank)
+        right_entry = right_by_rank.get(rank)
         comparison.append(
             {
                 "rank": rank,
-                "top10_2021": item_2021,
-                "top10_2025": item_2025,
-                "changed": (item_2021 or {}).get("section")
-                != (item_2025 or {}).get("section"),
+                "left": left_entry,
+                "right": right_entry,
+                "changed": (left_entry or {}).get("section")
+                != (right_entry or {}).get("section"),
             }
         )
 
     return {
-        "standards": ["OWASP Top 10 2021", "OWASP Top 10 2025"],
+        "standards": [left_standard, right_standard],
         "items": comparison,
     }
 
@@ -778,7 +824,7 @@ def map_analysis() -> Any:
         if direct_gap_analysis:
             return jsonify(direct_gap_analysis)
         abort(404, "No direct overlap found for requested standards")
-    owasp_top10_comparison = _build_owasp_top10_comparison(standards, database)
+    owasp_top10_comparison = _build_ranked_standard_comparison(standards, database)
 
     # First, check if we have cached results in the database
     if database.gap_analysis_exists(standards_hash):

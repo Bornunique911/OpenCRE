@@ -43,9 +43,17 @@ class TestOwaspKubernetesTop10_2025Parser(unittest.TestCase):
         self.assertEqual("K01", entries[0].sectionID)
         self.assertEqual("Insecure Workload Configurations", entries[0].section)
         self.assertEqual(
+            "https://owasp.org/www-project-kubernetes-top-ten/2025/en/src/K01-Insecure-Workload-Configurations.html",
+            entries[0].hyperlink,
+        )
+        self.assertEqual(
             ["233-748", "486-813"], [l.document.id for l in entries[0].links]
         )
         self.assertEqual("K10", entries[-1].sectionID)
+        self.assertEqual(
+            "https://owasp.org/www-project-kubernetes-top-ten/2025/en/src/K10-Inadequate-Logging-And-Monitoring.html",
+            entries[-1].hyperlink,
+        )
         self.assertEqual(
             ["148-420", "402-706", "843-841"],
             [l.document.id for l in entries[-1].links],
