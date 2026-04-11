@@ -11,12 +11,10 @@ export const getDocumentDisplayName = (document: Document, noID = false) => {
   if (!document) {
     return '';
   }
-  if (document.doctype != DOCUMENT_TYPES.TYPE_CRE) {
-    document.id = '';
-  }
+  const displayID = document.doctype != DOCUMENT_TYPES.TYPE_CRE ? '' : document.id;
   return [
     document.doctype,
-    noID ? '' : document.id,
+    noID ? '' : displayID,
     document.name,
     document.version,
     document.sectionID,
