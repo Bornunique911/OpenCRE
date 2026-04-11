@@ -48,6 +48,13 @@ import google.auth.transport.requests
 
 
 ITEMS_PER_PAGE = 20
+OWASP_TOP10_2025_DATA_FILE = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "utils"
+    / "external_project_parsers"
+    / "data"
+    / "owasp_top10_2025.json"
+)
 
 app = Blueprint(
     "web",
@@ -60,6 +67,33 @@ app = Blueprint(
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+STANDARD_NAME_ALIASES = {
+    "owasp top 2025": "OWASP Top 10 2025",
+}
+
+ROOT_CRES_FEATURED_STANDARDS = {
+    "AI": [
+        "OWASP Top 10 for LLM and Gen AI Apps 2025",
+        "OWASP AI Security Verification Standard (AISVS)",
+    ],
+    "API": [
+        "OWASP API Security Top 10 2023",
+    ],
+    "Cloud": [
+        "Cloud Controls Matrix",
+        "OWASP Kubernetes Top Ten 2025 (Draft)",
+    ],
+}
+ROOT_CRES_FEATURED_STANDARD_LIMIT = 2
+OPENCRE_STANDARD_NAME = "OpenCRE"
+LLM_TOP10_STANDARD_NAME = "OWASP Top 10 for LLM and Gen AI Apps 2025"
+AISVS_STANDARD_NAME = "OWASP AI Security Verification Standard (AISVS)"
+API_TOP10_STANDARD_NAME = "OWASP API Security Top 10 2023"
+CCM_STANDARD_NAME = "Cloud Controls Matrix"
+KUBERNETES_TOP10_2025_STANDARD_NAME = "OWASP Kubernetes Top Ten 2025 (Draft)"
+KUBERNETES_TOP10_2022_STANDARD_NAME = "OWASP Kubernetes Top Ten 2022"
+OWASP_CHEATSHEETS_STANDARD_NAME = "OWASP Cheat Sheets"
 
 
 class SupportedFormats(Enum):
@@ -88,6 +122,334 @@ def _normalize_source_name(source: Any) -> str | None:
         return None
 
     return normalized_source[:64]
+
+
+def _load_owasp_top10_2025_entries() -> list[dict[str, str]]:
+    with OWASP_TOP10_2025_DATA_FILE.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _normalize_standard_name(standard: str) -> str:
+    normalized_standard = str(standard).strip()
+    return STANDARD_NAME_ALIASES.get(normalized_standard.lower(), normalized_standard)
+
+
+def _build_owasp_top10_comparison(
+    standards: list[str], collection: db.Node_collection
+) -> dict[str, Any] | None:
+    requested = {str(standard).strip().lower() for standard in standards}
+    if requested != {"owasp top 10 2021", "owasp top 10 2025"}:
+        return None
+
+    top10_2021 = sorted(
+        collection.get_nodes(name="OWASP Top 10 2021"),
+        key=lambda node: node.sectionID or "",
+    )
+    if not top10_2021:
+        return None
+
+    top10_2025_nodes = sorted(
+        collection.get_nodes(name="OWASP Top 10 2025"),
+        key=lambda node: node.sectionID or "",
+    )
+    if top10_2025_nodes:
+        top10_2025 = [
+            {
+                "section_id": node.sectionID or "",
+                "section": node.section or "",
+                "hyperlink": node.hyperlink or "",
+            }
+            for node in top10_2025_nodes
+        ]
+    else:
+        top10_2025 = _load_owasp_top10_2025_entries()
+
+    top10_2021_by_rank = {
+        node.sectionID
+        or "": {
+            "section_id": node.sectionID or "",
+            "section": node.section or "",
+            "hyperlink": node.hyperlink or "",
+        }
+        for node in top10_2021
+    }
+    top10_2025_by_rank = {
+        entry["section_id"]: entry for entry in top10_2025 if entry.get("section_id")
+    }
+    ranks = sorted(set(top10_2021_by_rank.keys()) | set(top10_2025_by_rank.keys()))
+    comparison = []
+    for rank in ranks:
+        item_2021 = top10_2021_by_rank.get(rank)
+        item_2025 = top10_2025_by_rank.get(rank)
+        comparison.append(
+            {
+                "rank": rank,
+                "top10_2021": item_2021,
+                "top10_2025": item_2025,
+                "changed": (item_2021 or {}).get("section")
+                != (item_2025 or {}).get("section"),
+            }
+        )
+
+    return {
+        "standards": ["OWASP Top 10 2021", "OWASP Top 10 2025"],
+        "items": comparison,
+    }
+
+
+def _build_root_cres_featured_standards(
+    collection: db.Node_collection,
+) -> dict[str, list[dict[str, Any]]]:
+    featured: dict[str, list[dict[str, Any]]] = {}
+
+    for category, standard_names in ROOT_CRES_FEATURED_STANDARDS.items():
+        category_entries: list[dict[str, Any]] = []
+        for standard_name in standard_names[:ROOT_CRES_FEATURED_STANDARD_LIMIT]:
+            nodes = sorted(
+                collection.get_nodes(name=standard_name),
+                key=lambda node: (
+                    node.sectionID or "",
+                    node.section or "",
+                    node.id or "",
+                ),
+            )
+            if not nodes:
+                continue
+            category_entries.append(nodes[0].todict())
+
+        if category_entries:
+            featured[category] = category_entries
+
+    return featured
+
+
+def _fetch_upstream_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    encoded_standards = "&".join(
+        f"standard={urllib.parse.quote(str(standard), safe='')}"
+        for standard in standards
+    )
+    timeout = float(os.environ.get("CRE_WEB_UPSTREAM_TIMEOUT_SECONDS", "5"))
+    max_attempts = int(os.environ.get("CRE_WEB_UPSTREAM_MAX_ATTEMPTS", "1"))
+    backoff_seconds = float(
+        os.environ.get("CRE_WEB_UPSTREAM_RETRY_BACKOFF_SECONDS", "0.5")
+    )
+    try:
+        result = cre_main.fetch_upstream_json(
+            f"/map_analysis?{encoded_standards}",
+            timeout=timeout,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unable to fetch upstream map analysis for %s: %s",
+            standards_hash,
+            exc,
+        )
+        return None
+
+    if not isinstance(result, dict):
+        return None
+
+    if result.get("result"):
+        try:
+            collection.add_gap_analysis_result(
+                cache_key=standards_hash, ga_object=flask_json.dumps(result)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unable to cache upstream map analysis for %s: %s",
+                standards_hash,
+                exc,
+            )
+    return result
+
+
+def _get_opencre_documents(collection: db.Node_collection) -> list[defs.CRE]:
+    return [
+        collection.get_CREs(internal_id=cre.id)[0]
+        for cre in collection.session.query(db.CRE).all()
+    ]
+
+
+def _get_opencre_map_analysis_documents(
+    standard: str, collection: db.Node_collection
+) -> list[defs.Document]:
+    if standard == OPENCRE_STANDARD_NAME:
+        return _get_opencre_documents(collection)
+    return collection.get_nodes(name=standard)
+
+
+def _build_opencre_direct_link_path(
+    start_document: defs.Document, end_document: defs.Document
+) -> dict[str, Any]:
+    segment_start = start_document.shallow_copy()
+    # Keep the direct-link response compatible with the current popup renderer.
+    if segment_start.doctype != defs.Credoctypes.CRE.value:
+        segment_start.id = ""
+    return {
+        "end": end_document.shallow_copy(),
+        "path": [
+            {
+                "start": segment_start,
+                "end": end_document.shallow_copy(),
+                "relationship": "LINKED_TO",
+                "score": 0,
+            }
+        ],
+        "score": 0,
+    }
+
+
+def _make_opencre_direct_link_path_key(end_document: defs.Document) -> str:
+    return end_document.id
+
+
+def _add_opencre_direct_link_result(
+    grouped_paths: dict[str, dict[str, Any]],
+    start_document: defs.Document,
+    end_document: defs.Document,
+) -> None:
+    shared_paths = grouped_paths.setdefault(
+        start_document.id,
+        {
+            "start": start_document.shallow_copy(),
+            "paths": {},
+            "extra": 0,
+        },
+    )["paths"]
+    shared_paths.setdefault(
+        _make_opencre_direct_link_path_key(end_document),
+        _build_opencre_direct_link_path(start_document, end_document),
+    )
+
+
+def _build_opencre_direct_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    base_standard = standards[0]
+    compare_standard = standards[1]
+    base_nodes = _get_opencre_map_analysis_documents(base_standard, collection)
+    compare_nodes = _get_opencre_map_analysis_documents(compare_standard, collection)
+    if not base_nodes or not compare_nodes:
+        return None
+
+    base_is_opencre = base_standard == OPENCRE_STANDARD_NAME
+    opencre_nodes = base_nodes if base_is_opencre else compare_nodes
+    standard_nodes = compare_nodes if base_is_opencre else base_nodes
+
+    standard_nodes_by_id = {
+        standard_node.id: standard_node for standard_node in standard_nodes
+    }
+    direct_pairs: list[tuple[defs.CRE, defs.Document]] = []
+    for opencre_node in opencre_nodes:
+        for link in opencre_node.links:
+            if link.ltype != defs.LinkTypes.LinkedTo:
+                continue
+            standard_node = standard_nodes_by_id.get(link.document.id)
+            if not standard_node:
+                continue
+            direct_pairs.append((opencre_node, standard_node))
+
+    grouped_paths: dict[str, dict[str, Any]] = {}
+    for opencre_node, standard_node in direct_pairs:
+        if base_is_opencre:
+            _add_opencre_direct_link_result(grouped_paths, opencre_node, standard_node)
+        else:
+            _add_opencre_direct_link_result(grouped_paths, standard_node, opencre_node)
+
+    if not grouped_paths:
+        return None
+
+    result = {"result": grouped_paths}
+    collection.add_gap_analysis_result(
+        cache_key=standards_hash, ga_object=flask_json.dumps(result)
+    )
+    return result
+
+
+def _build_direct_cre_overlap_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    base_nodes = collection.get_nodes(name=standards[0])
+    compare_nodes = collection.get_nodes(name=standards[1])
+    if not base_nodes or not compare_nodes:
+        return None
+
+    if not base_nodes or not compare_nodes:
+        return None
+
+    compare_nodes_by_cre: dict[str, list[defs.Standard]] = {}
+    for compare_node in compare_nodes:
+        for link in compare_node.links:
+            if link.document.doctype != defs.Credoctypes.CRE:
+                continue
+            compare_nodes_by_cre.setdefault(link.document.id, []).append(compare_node)
+
+    grouped_paths: dict[str, dict[str, Any]] = {}
+    for base_node in base_nodes:
+        shared_paths: dict[str, Any] = {}
+        for link in base_node.links:
+            if link.document.doctype != defs.Credoctypes.CRE:
+                continue
+            for compare_node in compare_nodes_by_cre.get(link.document.id, []):
+                shared_paths.setdefault(
+                    compare_node.id,
+                    {
+                        "end": compare_node.shallow_copy(),
+                        "path": [
+                            {
+                                "start": base_node.shallow_copy(),
+                                "end": link.document.shallow_copy(),
+                                "relationship": "LINKED_TO",
+                                "score": 0,
+                            },
+                            {
+                                "start": link.document.shallow_copy(),
+                                "end": compare_node.shallow_copy(),
+                                "relationship": "LINKED_TO",
+                                "score": 0,
+                            },
+                        ],
+                        "score": 0,
+                    },
+                )
+
+        grouped_paths[base_node.id] = {
+            "start": base_node.shallow_copy(),
+            "paths": shared_paths,
+            "extra": 0,
+        }
+
+    result = {"result": grouped_paths}
+    try:
+        collection.add_gap_analysis_result(
+            cache_key=standards_hash, ga_object=flask_json.dumps(result)
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unable to cache direct CRE-overlap map analysis for %s: %s",
+            standards_hash,
+            exc,
+        )
+    return result
 
 
 def extend_cre_with_tag_links(
@@ -296,19 +658,29 @@ def find_document_by_tag() -> Any:
 
 @app.route("/rest/v1/map_analysis", methods=["GET"])
 def map_analysis() -> Any:
-    standards = request.args.getlist("standard")
+    standards = [_normalize_standard_name(s) for s in request.args.getlist("standard")]
     if posthog:
         posthog.capture(f"map_analysis", f"standards:{standards}")
 
     database = db.Node_collection()
-    standards = request.args.getlist("standard")
     standards_hash = gap_analysis.make_resources_key(standards)
+    if OPENCRE_STANDARD_NAME in standards:
+        direct_gap_analysis = _build_opencre_direct_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            return jsonify(direct_gap_analysis)
+        abort(404, "No direct overlap found for requested standards")
+    owasp_top10_comparison = _build_owasp_top10_comparison(standards, database)
 
     # First, check if we have cached results in the database
     if database.gap_analysis_exists(standards_hash):
         gap_analysis_result = database.get_gap_analysis_result(standards_hash)
         if gap_analysis_result:
-            return jsonify(flask_json.loads(gap_analysis_result))
+            result = flask_json.loads(gap_analysis_result)
+            if owasp_top10_comparison:
+                result["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(result)
 
     # On Heroku (read-only), check if standards exist before attempting Redis/queue operations
     is_heroku = os.environ.get("DYNO") is not None
@@ -337,13 +709,67 @@ def map_analysis() -> Any:
             f"Gap analysis calculations are disabled by CRE_NO_CALCULATE_GAP_ANALYSIS; "
             f"refusing to schedule new job for {standards_hash}"
         )
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
         abort(404, "Gap analysis calculations are disabled")
 
     # Now call schedule() which will handle Redis/queue operations
-    gap_analysis_dict = gap_analysis.schedule(standards, database)
+    try:
+        gap_analysis_dict = gap_analysis.schedule(standards, database)
+    except Exception as exc:
+        logger.error(f"Gap analysis scheduling failed for {standards_hash}: {exc}")
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
+        raise
+    if owasp_top10_comparison:
+        gap_analysis_dict["owasp_top10_comparison"] = owasp_top10_comparison
     if "result" in gap_analysis_dict:
         return jsonify(gap_analysis_dict)
     if gap_analysis_dict.get("error"):
+        upstream_gap_analysis = _fetch_upstream_map_analysis(
+            standards, standards_hash, database
+        )
+        if upstream_gap_analysis:
+            if owasp_top10_comparison:
+                upstream_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(upstream_gap_analysis)
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            if owasp_top10_comparison:
+                direct_gap_analysis["owasp_top10_comparison"] = owasp_top10_comparison
+            return jsonify(direct_gap_analysis)
+        if owasp_top10_comparison:
+            return jsonify({"owasp_top10_comparison": owasp_top10_comparison})
         abort(404)
     return jsonify({"job_id": gap_analysis_dict.get("job_id")})
 
@@ -438,7 +864,9 @@ def standards() -> Any:
         posthog.capture(f"standards", "")
 
     database = db.Node_collection()
-    standards = database.standards()
+    standards = list(database.standards())
+    if OPENCRE_STANDARD_NAME not in standards:
+        standards.append(OPENCRE_STANDARD_NAME)
     return standards
 
 
@@ -510,6 +938,9 @@ def find_root_cres() -> Any:
     if documents:
         res = [doc.todict() for doc in documents]
         result = {"data": res}
+        featured_standards = _build_root_cres_featured_standards(database)
+        if featured_standards:
+            result["featured_standards"] = featured_standards
         # if opt_osib:
         #     result["osib"] = odefs.cre2osib(documents).todict()
         if opt_format == SupportedFormats.Markdown.value:
