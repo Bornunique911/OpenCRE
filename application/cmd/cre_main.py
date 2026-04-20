@@ -203,6 +203,20 @@ def _has_ga_eligible_tags(tags: List[str]) -> bool:
     - Taxonomy/risk-list standards are also eligible (e.g. CAPEC)
     """
     tag_set = set(tags)
+    return (
+        {"family:standard", "subtype:requirements_standard"}.issubset(tag_set)
+        or {"family:taxonomy", "subtype:risk_list"}.issubset(tag_set)
+    )
+
+
+def _has_ga_eligible_tags(tags: List[str]) -> bool:
+    """
+    GA eligibility tag matrix.
+
+    - Requirements standards remain eligible (family:standard + subtype:requirements_standard)
+    - Taxonomy/risk-list standards are also eligible (e.g. CAPEC)
+    """
+    tag_set = set(tags)
     return {"family:standard", "subtype:requirements_standard"}.issubset(tag_set) or {
         "family:taxonomy",
         "subtype:risk_list",
@@ -232,92 +246,34 @@ def document_is_ga_eligible(doc: defs.Document, *, log_skips: bool = True) -> bo
                 "Skipping gap analysis for %s because tags are not GA-eligible",
                 getattr(doc, "name", "<unknown>"),
             )
-        elif contents.get("doctype") in (
-            defs.Credoctypes.Standard.value,
-            defs.Credoctypes.Code.value,
-            defs.Credoctypes.Tool.value,
-        ):
-            doctype = contents.get("doctype")
-            data_class = (
-                defs.Standard
-                if doctype == defs.Credoctypes.Standard.value
-                else (
-                    defs.Code
-                    if doctype == defs.Credoctypes.Code.value
-                    else defs.Tool if doctype == defs.Credoctypes.Tool.value else None
-                )
-            )
-            document = from_dict(
-                data_class=data_class,
-                data=contents,
-                config=Config(cast=[defs.Credoctypes]),
-            )
+        return False
 
-        for link in links:
-            doclink = parse_file_collect_only(
-                filename=filename,
-                yamldocs=[link.get("document")],
-            )
-
-            if doclink:
-                if len(doclink) > 1:
-                    logger.fatal(
-                        "Parsing single document returned 2 results this is a bug"
-                    )
-                document.add_link(
-                    defs.Link(
-                        document=doclink[0],
-                        ltype=link.get("type"),
-                        tags=link.get("tags"),
-                    )
-                )
-        if document is None:
-            logger.warning("Document is None, likely missing data")
-        resulting_objects.append(document)
-    return resulting_objects
+    return True
 
 
-def parse_file(
-    filename: str,
-    yamldocs: List[Dict[str, Any]],
-    scollection: db.Node_collection,
-    db_connection_str: str = "",
-    calculate_embeddings: bool = False,
-    calculate_gap_analysis: bool = False,
-) -> Optional[List[defs.Document]]:
-    """Parse YAML export format and apply via central import pipeline (Step 9)."""
-    from application.utils import import_pipeline
+def resource_name_ga_eligible_in_db(
+    collection: db.Node_collection, resource_name: str
+) -> bool:
+    """
+    Post-import GA eligibility using SQL node rows (for post_apply paths that
+    only have resource names, not defs.Document lists).
+    """
+    from sqlalchemy import func
 
-    collected = parse_file_collect_only(filename, yamldocs)
-    if collected is None:
-        return None
-    collected = [d for d in collected if d is not None]
-    if not collected:
-        return collected
-    pr = import_pipeline.parse_result_from_yaml_document_forest(
-        collected,
-        calculate_gap_analysis=calculate_gap_analysis,
-        calculate_embeddings=calculate_embeddings,
+    row = (
+        collection.session.query(db.Node)
+        .filter(func.lower(db.Node.name) == resource_name.lower())
+        .first()
     )
-    import_pipeline.apply_parse_result(
-        parse_result=pr,
-        collection=scollection,
-        db_connection_str=db_connection_str,
-        import_run_id=None,
-        import_source=None,
-        validate_classification_tags=False,
-    )
-    return collected
-
-
-def resolve_ga_peer_standard_names(
-    collection: db.Node_collection, importing_name: str
-) -> List[str]:
-    """Increment Step 10: GA peer list — CRE-sharing standards, else all others."""
-    shared = []
-    if shared:
-        return shared
-    return [s for s in collection.standards() if s != importing_name]
+    if not row:
+        return False
+    if row.ntype in (defs.Credoctypes.Tool.value, defs.Credoctypes.Code.value):
+        return False
+    if row.ntype != defs.Credoctypes.Standard.value:
+        return False
+    raw_tags = row.tags or ""
+    tag_set = {t.strip() for t in str(raw_tags).split(",") if t.strip()}
+    return _has_ga_eligible_tags(list(tag_set))
 
 
 def schedule_gap_analysis_importing_vs_peers(
