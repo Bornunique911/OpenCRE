@@ -481,8 +481,8 @@ export const GapAnalysis = () => {
           <Table.Header>
             <Table.Row>
               <Table.HeaderCell width={2}>Rank</Table.HeaderCell>
-              <Table.HeaderCell width={6}>OWASP Top 10 2021</Table.HeaderCell>
-              <Table.HeaderCell width={6}>OWASP Top 10 2025</Table.HeaderCell>
+              <Table.HeaderCell width={6}>{owaspComparison.standards[0]}</Table.HeaderCell>
+              <Table.HeaderCell width={6}>{owaspComparison.standards[1]}</Table.HeaderCell>
               <Table.HeaderCell width={2}>Changed</Table.HeaderCell>
             </Table.Row>
           </Table.Header>
@@ -493,21 +493,21 @@ export const GapAnalysis = () => {
                   <b>{item.rank}</b>
                 </Table.Cell>
                 <Table.Cell>
-                  {item.top10_2021?.hyperlink ? (
-                    <a href={item.top10_2021.hyperlink} target="_blank" rel="noopener noreferrer">
-                      {item.top10_2021.section}
+                  {item.left?.hyperlink ? (
+                    <a href={item.left.hyperlink} target="_blank" rel="noopener noreferrer">
+                      {item.left.section}
                     </a>
                   ) : (
-                    item.top10_2021?.section ?? <i>Not mapped</i>
+                    item.left?.section ?? <i>Not mapped</i>
                   )}
                 </Table.Cell>
                 <Table.Cell>
-                  {item.top10_2025?.hyperlink ? (
-                    <a href={item.top10_2025.hyperlink} target="_blank" rel="noopener noreferrer">
-                      {item.top10_2025.section}
+                  {item.right?.hyperlink ? (
+                    <a href={item.right.hyperlink} target="_blank" rel="noopener noreferrer">
+                      {item.right.section}
                     </a>
                   ) : (
-                    item.top10_2025?.section ?? <i>Not mapped</i>
+                    item.right?.section ?? <i>Not mapped</i>
                   )}
                 </Table.Cell>
                 <Table.Cell>{item.changed ? 'Yes' : 'No'}</Table.Cell>
