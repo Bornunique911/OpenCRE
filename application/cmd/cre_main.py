@@ -1075,6 +1075,27 @@ def generate_embeddings(db_url: str) -> None:
     database = db_connect(path=db_url)
     prompt_client.PromptHandler(database, load_all_embeddings=True)
 
+def parse_file(filename: str, yamldocs: List[Any], scollection) -> Optional[List[defs.Document]]:
+    """
+    Parse a list of dictionaries (YAML/JSON documents) into defs.Document objects.
+    Returns None and logs a critical error if any element is not a dict.
+    """
+    if not all(isinstance(doc, dict) for doc in yamldocs):
+        logger.critical("Malformed file %s, skipping", filename)
+        return None
+
+    def normalize_links(doc: dict) -> dict:
+        """Make sure link dicts use 'ltype' key instead of 'type'."""
+        if "links" in doc:
+            for link in doc["links"]:
+                if "type" in link and "ltype" not in link:
+                    link["ltype"] = link.pop("type")
+                # Recursively normalize nested documents (if any)
+                if "document" in link and isinstance(link["document"], dict):
+                    normalize_links(link["document"])
+        return doc
+
+    return [defs.Document.from_dict(normalize_links(dict(doc))) for doc in yamldocs]
 
 def populate_neo4j_db(cache: str):
     if (
