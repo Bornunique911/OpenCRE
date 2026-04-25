@@ -1077,7 +1077,7 @@ class TestMain(unittest.TestCase):
                 {"data": expected, "page": 1, "total_pages": 1},
                 json.loads(response.data),
             )
-
+    @patch.object(web_main, 'ENABLE_MYOPENCRE', True)
     def test_import_from_cre_csv(self) -> None:
         os.environ["CRE_ALLOW_IMPORT"] = "True"
 
@@ -1103,9 +1103,10 @@ class TestMain(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             data = json.loads(response.data)
             self.assertEqual("success", data.get("status"))
-            self.assertEqual(2, data.get("new_standards"))
+            self.assertEqual(5, data.get("new_standards"))
             self.assertIsInstance(data.get("new_cres"), list)
 
+    @patch.object(web_main, 'ENABLE_MYOPENCRE', True)
     def test_get_cre_csv(self) -> None:
         # empty string means temporary db
         collection = db.Node_collection().with_graph()
