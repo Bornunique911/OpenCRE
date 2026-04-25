@@ -646,36 +646,40 @@ class TestMain(unittest.TestCase):
             self.assertEqual(expected, json.loads(response.data))
             self.assertFalse(enqueue_call_mock.called)
 
-    @patch.object(db, "Node_collection")
-    @patch.object(rq.Queue, "enqueue_call")
-    @patch.object(redis, "from_url")
-    def test_gap_analysis_create_job_id(
-        self, redis_conn_mock, enqueue_call_mock, db_mock
-    ) -> None:
-        expected = {"job_id": "ABC"}
-        redis_conn_mock.return_value.get.return_value = None
-        enqueue_call_mock.return_value = MockJob()
-        db_mock.return_value.get_gap_analysis_result.return_value = None
-        db_mock.return_value.gap_analysis_exists.return_value = False
-        with self.app.test_client() as client:
-            response = client.get(
-                "/rest/v1/map_analysis?standard=aaa&standard=bbb",
-                headers={"Content-Type": "application/json"},
-            )
-            self.assertEqual(200, response.status_code)
-            self.assertEqual(expected, json.loads(response.data))
-            enqueue_call_mock.assert_called_with(
-                db.gap_analysis,
-                kwargs={
-                    "neo_db": db_mock().neo_db,
-                    "node_names": ["aaa", "bbb"],
-                    "cache_key": "aaa >> bbb",
-                },
-                timeout=GAP_ANALYSIS_TIMEOUT,
-            )
-            redis_conn_mock.return_value.set.assert_called_with(
-                "aaa >> bbb", '{"job_id": "ABC", "result": ""}'
-            )
+        @patch.object(db, "Node_collection")          # top decorator → first parameter
+        @patch.object(rq.Queue, "enqueue_call")        # middle decorator → second parameter
+        @patch.object(redis, "from_url")               # bottom decorator → third parameter
+        def test_gap_analysis_create_job_id(
+            self, db_mock, enqueue_call_mock, redis_conn_mock
+        ) -> None:
+            expected = {"job_id": "ABC"}
+            redis_conn_mock.return_value.get.return_value = None
+            enqueue_call_mock.return_value = MockJob()
+            db_mock.return_value.get_gap_analysis_result.return_value = None
+            db_mock.return_value.gap_analysis_exists.return_value = False
+
+            # Provide a valid return value for the neo_db gap_analysis call
+            db_mock.return_value.neo_db.gap_analysis.return_value = ({}, [])
+
+            with self.app.test_client() as client:
+                response = client.get(
+                    "/rest/v1/map_analysis?standard=aaa&standard=bbb",
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(expected, json.loads(response.data))
+                enqueue_call_mock.assert_called_with(
+                    db.gap_analysis,
+                    kwargs={
+                        "neo_db": db_mock().neo_db,
+                        "node_names": ["aaa", "bbb"],
+                        "cache_key": "aaa >> bbb",
+                    },
+                    timeout=GAP_ANALYSIS_TIMEOUT,
+                )
+                redis_conn_mock.return_value.set.assert_called_with(
+                    "aaa >> bbb", '{"job_id": "ABC", "result": ""}'
+                )
 
     @patch.object(redis, "from_url")
     @patch.object(db, "Node_collection")
