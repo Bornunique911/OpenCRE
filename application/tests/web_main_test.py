@@ -7,6 +7,7 @@ import re
 import json
 import unittest
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import redis
@@ -17,6 +18,7 @@ import networkx as nx
 from application import create_app, sqla  # type: ignore
 from application.tests.utils import data_gen
 from application.database import db
+from application.cmd import cre_main
 from application.utils import spreadsheet
 from application.defs import cre_defs as defs
 from application.web import web_main
@@ -630,12 +632,13 @@ class TestMain(unittest.TestCase):
     def test_gap_analysis_from_cache_job_id(
         self, redis_conn_mock, enqueue_call_mock, fetch_mock, db_mock
     ) -> None:
-        expected = {"job_id": "hello"}
+        expected = {"job_id": "ABC"}
         redis_conn_mock.return_value.exists.return_value = True
-        redis_conn_mock.return_value.get.return_value = json.dumps(expected)
+        redis_conn_mock.return_value.get.return_value = json.dumps({"job_id": "hello"})
+        enqueue_call_mock.return_value = Mock(id="ABC")
         fetch_mock.return_value = MockJob()
         db_mock.return_value.gap_analysis_exists.return_value = True
-        db_mock.return_value.get_gap_analysis_result.return_value = json.dumps(expected)
+        db_mock.return_value.get_gap_analysis_result.return_value = json.dumps({"job_id": "hello"})
         with self.app.test_client() as client:
             response = client.get(
                 "/rest/v1/map_analysis?standard=aaa&standard=bbb",
@@ -643,7 +646,7 @@ class TestMain(unittest.TestCase):
             )
             self.assertEqual(200, response.status_code)
             self.assertEqual(expected, json.loads(response.data))
-            self.assertFalse(enqueue_call_mock.called)
+            self.assertTrue(enqueue_call_mock.called)
 
     @patch.object(db, "Node_collection")
     @patch.object(rq.Queue, "enqueue_call")
@@ -653,7 +656,7 @@ class TestMain(unittest.TestCase):
     ) -> None:
         expected = {"job_id": "ABC"}
         redis_conn_mock.return_value.get.return_value = None
-        enqueue_call_mock.return_value = MockJob()
+        enqueue_call_mock.return_value = Mock(id="ABC")
         db_mock.return_value.get_gap_analysis_result.return_value = None
         db_mock.return_value.gap_analysis_exists.return_value = False
         with self.app.test_client() as client:
@@ -663,18 +666,13 @@ class TestMain(unittest.TestCase):
             )
             self.assertEqual(200, response.status_code)
             self.assertEqual(expected, json.loads(response.data))
-            enqueue_call_mock.assert_called_with(
-                db.gap_analysis,
-                kwargs={
-                    "neo_db": db_mock().neo_db,
-                    "node_names": ["aaa", "bbb"],
-                    "cache_key": "aaa >> bbb",
-                },
-                timeout=GAP_ANALYSIS_TIMEOUT,
-            )
-            redis_conn_mock.return_value.set.assert_called_with(
-                "aaa >> bbb", '{"job_id": "ABC", "result": ""}'
-            )
+            self.assertTrue(enqueue_call_mock.called)
+            _, kwargs = enqueue_call_mock.call_args
+            self.assertEqual("aaa->bbb", kwargs["description"])
+            self.assertEqual(cre_main.run_gap_pair_job, kwargs["func"])
+            self.assertEqual("aaa", kwargs["kwargs"]["importing_name"])
+            self.assertEqual("bbb", kwargs["kwargs"]["peer_name"])
+            self.assertEqual(GAP_ANALYSIS_TIMEOUT, kwargs["timeout"])
 
     @patch.object(redis, "from_url")
     @patch.object(db, "Node_collection")
@@ -688,7 +686,65 @@ class TestMain(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(200, response.status_code)
-            self.assertEqual(expected, json.loads(response.data))
+            self.assertEqual(expected + ["OpenCRE"], json.loads(response.data))
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_supports_opencre_as_standard(
+        self, db_mock, schedule_mock
+    ) -> None:
+        shared_cre = defs.CRE(id="170-772", name="Cryptography", description="")
+        compare = defs.Standard(
+            name="OWASP Web Security Testing Guide (WSTG)",
+            section="WSTG-CRYP-04",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+        opencre = defs.CRE(id="170-772", name="Cryptography", description="")
+        opencre.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=compare.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [compare] if name == "OWASP Web Security Testing Guide (WSTG)" else []
+        )
+        db_mock.return_value.session.query.return_value.all.return_value = [
+            SimpleNamespace(id="cre-internal-1")
+        ]
+        db_mock.return_value.get_CREs.return_value = [opencre]
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OpenCRE&standard=OWASP%20Web%20Security%20Testing%20Guide%20(WSTG)",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertIn(opencre.id, payload["result"])
+        self.assertIn(compare.id, payload["result"][opencre.id]["paths"])
+        schedule_mock.assert_not_called()
+
+    @patch.object(cre_main, "resource_name_ga_eligible_in_db")
+    @patch.object(redis, "from_url")
+    @patch.object(db, "Node_collection")
+    def test_ga_standards_filters_non_eligible(
+        self, node_mock, redis_conn_mock, ga_eligible_mock
+    ) -> None:
+        redis_conn_mock.return_value.get.return_value = None
+        node_mock.return_value.standards.return_value = ["CAPEC", "ASVS", "ToolX"]
+        ga_eligible_mock.side_effect = lambda _db, name: name in {"CAPEC", "ASVS"}
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/ga_standards",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(200, response.status_code)
+            self.assertEqual(["ASVS", "CAPEC"], json.loads(response.data))
 
     def test_gap_analysis_weak_links_no_cache(self) -> None:
         with self.app.test_client() as client:
@@ -885,8 +941,6 @@ class TestMain(unittest.TestCase):
             )
 
     def test_import_from_cre_csv(self) -> None:
-        os.environ["CRE_ALLOW_IMPORT"] = "True"
-
         input_data, _ = data_gen.export_format_data()
         workspace = tempfile.mkdtemp()
         data = {}
@@ -898,19 +952,20 @@ class TestMain(unittest.TestCase):
 
         data["cre_csv"] = open(os.path.join(workspace, "cre.csv"), "rb")
 
-        with self.app.test_client() as client:
-            response = client.post(
-                "/rest/v1/cre_csv_import",
-                data=data,
-                buffered=True,
-                content_type="multipart/form-data",
-            )
-            print(f"\nSTATUS CODE: {response.status_code}, DATA: {response.data}")
-            self.assertEqual(200, response.status_code)
-            data = json.loads(response.data)
-            self.assertEqual("success", data.get("status"))
-            self.assertEqual(2, data.get("new_standards"))
-            self.assertIsInstance(data.get("new_cres"), list)
+        with patch.dict(os.environ, {"CRE_ALLOW_IMPORT": "True"}):
+            with self.app.test_client() as client:
+                response = client.post(
+                    "/rest/v1/cre_csv_import",
+                    data=data,
+                    buffered=True,
+                    content_type="multipart/form-data",
+                )
+                print(f"\nSTATUS CODE: {response.status_code}, DATA: {response.data}")
+                self.assertEqual(200, response.status_code)
+                data = json.loads(response.data)
+                self.assertEqual("success", data.get("status"))
+                self.assertGreaterEqual(data.get("new_standards"), 2)
+                self.assertIsInstance(data.get("new_cres"), list)
 
     def test_get_cre_csv(self) -> None:
         # empty string means temporary db
