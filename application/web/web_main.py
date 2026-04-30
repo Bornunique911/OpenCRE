@@ -22,6 +22,7 @@ from application.database import db
 from application.cmd import cre_main
 from application.defs import cre_defs as defs
 from application.defs import cre_exceptions
+from application.feature_flags import is_cre_import_allowed
 
 from application.utils import spreadsheet as sheet_utils
 from application.utils import mdutils, redirectors, gap_analysis
@@ -47,6 +48,7 @@ import google.auth.transport.requests
 
 
 ITEMS_PER_PAGE = 20
+OPENCRE_STANDARD_NAME = "OpenCRE"
 
 app = Blueprint(
     "web",
@@ -296,6 +298,116 @@ def find_document_by_tag() -> Any:
     abort(404, "Tag does not exist")
 
 
+def _get_opencre_documents(collection: db.Node_collection) -> list[defs.CRE]:
+    return [
+        collection.get_CREs(internal_id=cre.id)[0]
+        for cre in collection.session.query(db.CRE).all()
+    ]
+
+
+def _get_map_analysis_documents(
+    standard: str, collection: db.Node_collection
+) -> list[defs.Document]:
+    if standard == OPENCRE_STANDARD_NAME:
+        return _get_opencre_documents(collection)
+    return collection.get_nodes(name=standard)
+
+
+def _build_direct_link_path(
+    start_document: defs.Document, end_document: defs.Document
+) -> dict[str, Any]:
+    segment_start = start_document.shallow_copy()
+    # The current gap-analysis popup mutates non-CRE row ids during display
+    # before it resolves the one-step direct path. Keep this direct-link fast
+    # path compatible by mirroring that display-only shape in the segment start.
+    if segment_start.doctype != defs.Credoctypes.CRE.value:
+        segment_start.id = ""
+    return {
+        "end": end_document.shallow_copy(),
+        "path": [
+            {
+                "start": segment_start,
+                "end": end_document.shallow_copy(),
+                "relationship": "LINKED_TO",
+                "score": 0,
+            }
+        ],
+        "score": 0,
+    }
+
+
+def _make_direct_link_path_key(end_document: defs.Document) -> str:
+    return end_document.id
+
+
+def _add_direct_link_result(
+    grouped_paths: dict[str, dict[str, Any]],
+    start_document: defs.Document,
+    end_document: defs.Document,
+) -> None:
+    shared_paths = grouped_paths.setdefault(
+        start_document.id,
+        {
+            "start": start_document.shallow_copy(),
+            "paths": {},
+            "extra": 0,
+        },
+    )["paths"]
+    shared_paths.setdefault(
+        _make_direct_link_path_key(end_document),
+        _build_direct_link_path(start_document, end_document),
+    )
+
+
+def _build_direct_cre_overlap_map_analysis(
+    standards: list[str],
+    standards_hash: str,
+    collection: db.Node_collection,
+) -> dict[str, Any] | None:
+    if len(standards) < 2:
+        return None
+
+    base_standard = standards[0]
+    compare_standard = standards[1]
+    base_nodes = _get_map_analysis_documents(base_standard, collection)
+    compare_nodes = _get_map_analysis_documents(compare_standard, collection)
+    if not base_nodes or not compare_nodes:
+        return None
+
+    base_is_opencre = base_standard == OPENCRE_STANDARD_NAME
+    opencre_nodes = base_nodes if base_is_opencre else compare_nodes
+    standard_nodes = compare_nodes if base_is_opencre else base_nodes
+
+    standard_nodes_by_id = {
+        standard_node.id: standard_node for standard_node in standard_nodes
+    }
+    direct_pairs: list[tuple[defs.CRE, defs.Document]] = []
+    for opencre_node in opencre_nodes:
+        for link in opencre_node.links:
+            if link.ltype != defs.LinkTypes.LinkedTo:
+                continue
+            standard_node = standard_nodes_by_id.get(link.document.id)
+            if not standard_node:
+                continue
+            direct_pairs.append((opencre_node, standard_node))
+
+    grouped_paths: dict[str, dict[str, Any]] = {}
+    for opencre_node, standard_node in direct_pairs:
+        if base_is_opencre:
+            _add_direct_link_result(grouped_paths, opencre_node, standard_node)
+        else:
+            _add_direct_link_result(grouped_paths, standard_node, opencre_node)
+
+    if not grouped_paths:
+        return None
+
+    result = {"result": grouped_paths}
+    collection.add_gap_analysis_result(
+        cache_key=standards_hash, ga_object=flask_json.dumps(result)
+    )
+    return result
+
+
 @app.route("/rest/v1/map_analysis", methods=["GET"])
 def map_analysis() -> Any:
     standards = request.args.getlist("standard")
@@ -306,18 +418,33 @@ def map_analysis() -> Any:
     if len(standards) < 2:
         abort(400, "Please provide two standards")
     standards = standards[:2]
-    cache_key = gap_analysis.make_resources_key(standards)
-    cached = database.get_gap_analysis_result(cache_key=cache_key)
-    if cached:
-        parsed = json.loads(cached)
-        if parsed.get("result"):
-            return jsonify({"result": parsed.get("result")})
+    standards_hash = gap_analysis.make_resources_key(standards)
+
+    # ----- PR #825: OpenCRE fast path -----
+    if OPENCRE_STANDARD_NAME in standards:
+        direct_gap_analysis = _build_direct_cre_overlap_map_analysis(
+            standards, standards_hash, database
+        )
+        if direct_gap_analysis:
+            return jsonify(direct_gap_analysis)
+        abort(404, "No direct overlap found for requested standards")
+
+    # ----- upstream: cached result -----
+    cache_key = standards_hash
+    if database.gap_analysis_exists(cache_key):
+        cached = database.get_gap_analysis_result(cache_key=cache_key)
+        if cached:
+            parsed = json.loads(cached)
+            if "result" in parsed:
+                return jsonify({"result": parsed.get("result")})
+
+    # ----- upstream: Heroku guard -----
     if os.environ.get("HEROKU"):
         abort(404, "No such Cache")
 
+    # ----- upstream: Redis / RQ path with synchronous fallback -----
     db_url = os.environ.get("CRE_CACHE_FILE") or os.environ.get("PROD_DATABASE_URL")
     if not db_url:
-        # Derive from current SQLAlchemy bind when not explicitly set.
         db_url = str(getattr(getattr(database.session, "bind", None), "url", ""))
     try:
         conn = redis.connect()
@@ -380,7 +507,7 @@ def map_analysis_weak_links() -> Any:
     gap_analysis_results = database.get_gap_analysis_result(cache_key=cache_key)
     if gap_analysis_results:
         gap_analysis_dict = json.loads(gap_analysis_results)
-        if gap_analysis_dict.get("result"):
+        if "result" in gap_analysis_dict:
             return jsonify({"result": gap_analysis_dict.get("result")})
 
     # if conn.exists(cache_key):
@@ -460,7 +587,9 @@ def standards() -> Any:
         posthog.capture(f"standards", "")
 
     database = db.Node_collection()
-    standards = database.standards()
+    standards = list(database.standards())
+    if OPENCRE_STANDARD_NAME not in standards:
+        standards.append(OPENCRE_STANDARD_NAME)
     return standards
 
 
@@ -474,9 +603,14 @@ def ga_standards() -> Any:
         posthog.capture("ga_standards", "")
 
     database = db.Node_collection()
-    standards = database.standards()
+    standards = list(database.standards())
+    if OPENCRE_STANDARD_NAME not in standards:
+        standards.append(OPENCRE_STANDARD_NAME)
     eligible = [
-        s for s in standards if cre_main.resource_name_ga_eligible_in_db(database, s)
+        s
+        for s in standards
+        if s == OPENCRE_STANDARD_NAME
+        or cre_main.resource_name_ga_eligible_in_db(database, s)
     ]
     return sorted(eligible)
 
@@ -498,7 +632,7 @@ def openapi_spec() -> Any:
 
 @app.route("/rest/v1/text_search", methods=["GET"])
 def text_search() -> Any:
-    """
+    r"""
     Performs arbitrary text search among all known documents.
     Formats supported:
         * 'CRE:<id>' will search for the <id> in cre ids
@@ -721,11 +855,7 @@ def login_required(f):
 def admin_imports_enabled_required(f):
     @wraps(f)
     def enabled_r(*args, **kwargs):
-        if str(os.environ.get("CRE_ALLOW_IMPORT", "")).lower() not in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if not is_cre_import_allowed():
             abort(404, description="Admin imports API is disabled")
         return f(*args, **kwargs)
 
@@ -917,10 +1047,28 @@ def chat_cre() -> Any:
 
     database = db.Node_collection()
     # Lazy import to avoid loading heavy prompt/ML dependencies at web boot.
-    from application.prompt_client import prompt_client
+    from application.prompt_client import llm_error_utils, prompt_client
 
     prompt = prompt_client.PromptHandler(database)
-    response = prompt.generate_text(message.get("prompt"))
+    try:
+        response = prompt.generate_text(message.get("prompt"))
+    except Exception as e:
+        if llm_error_utils.is_rate_limit_error(e):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "The AI service is temporarily rate-limited or out of quota. "
+                            "Please try again in a minute."
+                        )
+                    }
+                ),
+                503,
+            )
+        return (
+            jsonify({"error": f"AI Service Error: {str(e)}"}),
+            500,
+        )
     return jsonify(response)
 
 
@@ -1087,7 +1235,7 @@ def get_cre_csv() -> Any:
 
 @app.route("/rest/v1/config", methods=["GET"])
 def get_config() -> Any:
-    return jsonify({"CRE_ALLOW_IMPORT": os.environ.get("CRE_ALLOW_IMPORT") == "1"})
+    return jsonify({"CRE_ALLOW_IMPORT": is_cre_import_allowed()})
 
 
 @app.route("/admin/imports/rerun", methods=["POST"])
@@ -1119,7 +1267,7 @@ def admin_imports_rerun() -> Any:
 
 @app.route("/rest/v1/cre_csv_import", methods=["POST"])
 def import_from_cre_csv() -> Any:
-    if str(os.environ.get("CRE_ALLOW_IMPORT", "")).lower() not in ("1", "true", "yes"):
+    if not is_cre_import_allowed():
         abort(
             403,
             "Importing is disabled, set the environment variable CRE_ALLOW_IMPORT to allow this functionality",

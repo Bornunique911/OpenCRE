@@ -21,7 +21,7 @@ from neomodel.exceptions import (
 from flask import json as flask_json
 from sqlalchemy.orm import aliased
 from flask_sqlalchemy.model import DefaultMeta
-from sqlalchemy import func, delete, cast as sql_cast, literal
+from sqlalchemy import func, delete, cast as sql_cast, literal, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import OperationalError, IntegrityError
 
@@ -42,9 +42,11 @@ from application.utils import redis
 from application.defs import cre_defs
 from application.utils import file
 from application.utils.gap_analysis import (
+    gap_analysis_cache_key_is_primary,
     get_path_score,
     make_resources_key,
     make_subresources_key,
+    primary_gap_analysis_payload_is_material,
 )
 
 
@@ -186,6 +188,8 @@ class Embeddings(BaseModel):  # type: ignore
 
     embeddings_url = sqla.Column(sqla.String, nullable=True, default=None)
     embeddings_content = sqla.Column(sqla.String, nullable=True, default=None)
+    embedding_model_id = sqla.Column(sqla.String, nullable=True, default=None)
+    embedding_dim = sqla.Column(sqla.Integer, nullable=True, default=None)
 
 
 class GapAnalysisResults(BaseModel):
@@ -2261,15 +2265,48 @@ class Node_collection:
             .all()
         )
 
+    def delete_all_embeddings(self) -> int:
+        """
+        Delete every row in ``embeddings`` so a subsequent ``PromptHandler(..., load_all_embeddings=True)``
+        run rebuilds vectors (e.g. after changing smart-extract policy or embedding model).
+        """
+        n_deleted = self.session.query(Embeddings).delete(synchronize_session=False)
+        self.session.commit()
+        return int(n_deleted or 0)
+
     def add_embedding(
         self,
         db_object: CRE | Node,
         doctype: cre_defs.Credoctypes,
         embeddings: List[float],
         embedding_text: str,
+        embeddings_url: Optional[str] = None,
     ):
+        """
+        Persist embedding vector and content.
+
+        For nodes, ``embeddings_url`` is the resolved URL used for fetch/embed alignment
+        (may include a fragment). When ``None``, defaults to ``db_object.link`` (importer hyperlink).
+        """
+        expected_dim_raw = (os.environ.get("CRE_EMBED_EXPECTED_DIM", "") or "").strip()
+        embedding_model_id = (
+            os.environ.get("CRE_EMBED_MODEL", "") or ""
+        ).strip() or "gemini/gemini-embedding-001"
+        embedding_dim = len(embeddings)
+        if expected_dim_raw:
+            expected_dim = int(expected_dim_raw)
+            if len(embeddings) != expected_dim:
+                raise ValueError(
+                    f"embedding dimension mismatch for {db_object.id}: "
+                    f"expected {expected_dim}, got {len(embeddings)}"
+                )
         existing = self.get_embedding(db_object.id)
         embeddings_str = ",".join([str(e) for e in embeddings])
+        resolved_node_url: Optional[str] = None
+        if doctype != cre_defs.Credoctypes.CRE:
+            resolved_node_url = (
+                embeddings_url if embeddings_url is not None else db_object.link
+            )
 
         if not existing:
             emb = None
@@ -2279,6 +2316,8 @@ class Node_collection:
                     cre_id=db_object.id,
                     doc_type=cre_defs.Credoctypes.CRE.value,
                     embeddings_content=embedding_text,
+                    embedding_model_id=embedding_model_id,
+                    embedding_dim=embedding_dim,
                 )
             else:
                 emb = Embeddings(
@@ -2286,7 +2325,9 @@ class Node_collection:
                     node_id=db_object.id,
                     doc_type=db_object.ntype,
                     embeddings_content=embedding_text,
-                    embeddings_url=db_object.link,
+                    embeddings_url=resolved_node_url,
+                    embedding_model_id=embedding_model_id,
+                    embedding_dim=embedding_dim,
                 )
             self.session.add(emb)
             self.session.commit()
@@ -2295,15 +2336,79 @@ class Node_collection:
             logger.debug(f"knew of embedding for object {db_object.id} ,updating")
             existing[0].embeddings = embeddings_str
             existing[0].embeddings_content = embedding_text
+            existing[0].embedding_model_id = embedding_model_id
+            existing[0].embedding_dim = embedding_dim
+            if doctype != cre_defs.Credoctypes.CRE:
+                if embeddings_url is not None:
+                    existing[0].embeddings_url = embeddings_url
+                elif getattr(existing[0], "embeddings_url", None) is None:
+                    existing[0].embeddings_url = db_object.link
             self.session.commit()
 
             return existing
 
+    def assert_embedding_contract(
+        self,
+        *,
+        expected_model_id: Optional[str],
+        expected_dim: Optional[int],
+    ) -> None:
+        """
+        Validate persisted embedding metadata consistency.
+
+        - Fails when multiple dimensions are stored.
+        - Fails when metadata is missing or mismatched against expected model/dimension.
+        """
+        rows = self.session.query(
+            Embeddings.embedding_dim, Embeddings.embedding_model_id
+        ).all()
+        if not rows:
+            return
+
+        dims = {int(r[0]) for r in rows if r[0] is not None}
+        model_ids = {str(r[1]) for r in rows if r[1]}
+        has_missing_dim = any(r[0] is None for r in rows)
+        has_missing_model = any(not r[1] for r in rows)
+
+        if len(dims) > 1:
+            raise RuntimeError(
+                f"multiple embedding dimensions detected in DB: {sorted(dims)}"
+            )
+        if len(model_ids) > 1:
+            raise RuntimeError(
+                f"multiple embedding models detected in DB: {sorted(model_ids)}"
+            )
+
+        if has_missing_dim or has_missing_model:
+            raise RuntimeError(
+                "embedding metadata missing in DB; run metadata migration/backfill"
+            )
+
+        if expected_dim is not None and dims:
+            db_dim = next(iter(dims))
+            if db_dim != expected_dim:
+                raise RuntimeError(
+                    f"DB embedding dim {db_dim} does not match expected dim {expected_dim}"
+                )
+
+        if expected_model_id and model_ids:
+            db_model = next(iter(model_ids))
+            if db_model != expected_model_id:
+                raise RuntimeError(
+                    f"DB embedding model {db_model} does not match expected model {expected_model_id}"
+                )
+
     def gap_analysis_exists(self, cache_key) -> bool:
-        q = self.session.query(GapAnalysisResults).filter(
-            GapAnalysisResults.cache_key == cache_key
+        row = (
+            self.session.query(GapAnalysisResults)
+            .filter(GapAnalysisResults.cache_key == cache_key)
+            .first()
         )
-        return self.session.query(q.exists()).scalar()
+        if row is None:
+            return False
+        if gap_analysis_cache_key_is_primary(cache_key):
+            return primary_gap_analysis_payload_is_material(row.ga_object)
+        return True
 
     def get_gap_analysis_result(self, cache_key) -> str:
         logger.info(f"looking for gap analysis with cache key: {cache_key}")
@@ -2318,7 +2423,16 @@ class Node_collection:
         logger.info(f"did not find gap analysis with cache key: {cache_key}")
 
     def add_gap_analysis_result(self, cache_key: str, ga_object: str):
-        if not self.gap_analysis_exists(cache_key):
+        existing = (
+            self.session.query(GapAnalysisResults)
+            .filter(GapAnalysisResults.cache_key == cache_key)
+            .first()
+        )
+        if existing:
+            existing.ga_object = ga_object
+            self.session.add(existing)
+            self.session.commit()
+        else:
             logger.info(f"adding gap analysis result with cache key: {cache_key}")
             res = GapAnalysisResults(cache_key=cache_key, ga_object=ga_object)
             self.session.add(res)
@@ -2490,6 +2604,20 @@ def gap_analysis(
             grouped_paths[key] = {"start": node, "paths": {}, "extra": 0}
             extra_paths_dict[key] = {"paths": {}}
 
+    # Paths may start from CRE nodes that were not included in ``base_standard`` (or
+    # ``base_standard`` entries were skipped due to empty ids). Seed roots from each
+    # path's start so we never drop Neo paths or hit KeyError in the merge loop below.
+    for path in paths:
+        start_doc = path.get("start")
+        if start_doc is None:
+            continue
+        key = getattr(start_doc, "id", "") or ""
+        if not key:
+            continue
+        if key not in grouped_paths:
+            grouped_paths[key] = {"start": start_doc, "paths": {}, "extra": 0}
+            extra_paths_dict[key] = {"paths": {}}
+
     for path in paths:
         key = path["start"].id
         end_key = path["end"].id
@@ -2525,6 +2653,30 @@ def gap_analysis(
 
     if cache_key == "":
         cache_key = make_resources_key(node_names)
+    if not grouped_paths:
+        if gap_analysis_cache_key_is_primary(cache_key):
+            stale = (
+                cre_db.session.query(GapAnalysisResults)
+                .filter(
+                    or_(
+                        GapAnalysisResults.cache_key == cache_key,
+                        GapAnalysisResults.cache_key.like(cache_key + "->%"),
+                    )
+                )
+                .all()
+            )
+            for row in stale:
+                cre_db.session.delete(row)
+            if stale:
+                cre_db.session.commit()
+        logger.warning(
+            "Not persisting gap analysis for %s: grouped_paths is empty "
+            "(Neo likely had no parseable base standard or no paths). "
+            "Re-run after Neo is populated so the pair is not locked in as an empty cache.",
+            cache_key,
+        )
+        return (node_names, grouped_paths, extra_paths_dict)
+
     logger.info(f"got gap analysis paths for {'>>>'.join(node_names)}, storing result")
     cre_db.add_gap_analysis_result(
         cache_key=cache_key, ga_object=flask_json.dumps({"result": grouped_paths})

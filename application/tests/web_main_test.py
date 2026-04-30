@@ -7,6 +7,7 @@ import re
 import json
 import unittest
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 import redis
@@ -694,6 +695,26 @@ class TestMain(unittest.TestCase):
             self.assertEqual(GAP_ANALYSIS_TIMEOUT, kwargs["timeout"])
 
     @patch.object(db, "Node_collection")
+    @patch.object(rq.Queue, "enqueue_call")
+    @patch.object(redis, "from_url")
+    def test_map_analysis_non_material_sql_cache_triggers_job(
+        self, redis_conn_mock, enqueue_call_mock, db_mock
+    ) -> None:
+        """SQL rows with empty ``result`` must not short-circuit map_analysis."""
+        redis_conn_mock.return_value.get.return_value = None
+        enqueue_call_mock.return_value = Mock(id="ABC")
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_gap_analysis_result.return_value = '{"result": {}}'
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=aaa&standard=bbb",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(200, response.status_code)
+            self.assertEqual({"job_id": "ABC"}, json.loads(response.data))
+            enqueue_call_mock.assert_called_once()
+
+    @patch.object(db, "Node_collection")
     @patch.object(db, "gap_analysis")
     @patch.object(redis, "from_url")
     def test_gap_analysis_fallback_without_redis(
@@ -740,7 +761,199 @@ class TestMain(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(200, response.status_code)
-            self.assertEqual(expected, json.loads(response.data))
+            self.assertEqual(expected + ["OpenCRE"], json.loads(response.data))
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_supports_opencre_as_standard(
+        self, db_mock, schedule_mock
+    ) -> None:
+        shared_cre = defs.CRE(id="170-772", name="Cryptography", description="")
+        compare = defs.Standard(
+            name="OWASP Web Security Testing Guide (WSTG)",
+            section="WSTG-CRYP-04",
+        )
+        compare.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=shared_cre.shallow_copy())
+        )
+        opencre = defs.CRE(id="170-772", name="Cryptography", description="")
+        opencre.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=compare.shallow_copy())
+        )
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [compare] if name == "OWASP Web Security Testing Guide (WSTG)" else []
+        )
+        db_mock.return_value.session.query.return_value.all.return_value = [
+            SimpleNamespace(id="cre-internal-1")
+        ]
+        db_mock.return_value.get_CREs.return_value = [opencre]
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OpenCRE&standard=OWASP%20Web%20Security%20Testing%20Guide%20(WSTG)",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertIn(opencre.id, payload["result"])
+        self.assertEqual(1, len(payload["result"][opencre.id]["paths"]))
+        path = next(iter(payload["result"][opencre.id]["paths"].values()))
+        self.assertEqual(compare.id, path["end"]["id"])
+        schedule_mock.assert_not_called()
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_only_direct_opencre_mappings(
+        self, db_mock, schedule_mock
+    ) -> None:
+        compare = defs.Standard(
+            name="CWE",
+            sectionID="1004",
+            section="Sensitive Cookie Without 'HttpOnly' Flag",
+        )
+        direct_cre = defs.CRE(
+            id="804-220",
+            name="Set httponly attribute for cookie-based session tokens",
+            description="",
+        )
+        direct_cre.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=compare.shallow_copy())
+        )
+        auto_linked_cres = []
+        for i, cre_id in enumerate(
+            [
+                "117-371",
+                "166-151",
+                "284-521",
+                "368-633",
+                "612-252",
+                "664-080",
+                "801-310",
+            ],
+            start=1,
+        ):
+            cre = defs.CRE(
+                id=cre_id,
+                name=f"Automatically mapped CRE {i}",
+                description="",
+            )
+            cre.add_link(
+                defs.Link(
+                    ltype=defs.LinkTypes.AutomaticallyLinkedTo,
+                    document=compare.shallow_copy(),
+                )
+            )
+            auto_linked_cres.append(cre)
+
+        opencre_documents = [direct_cre] + auto_linked_cres
+        internal_ids = [
+            SimpleNamespace(id=f"cre-internal-{i}")
+            for i in range(len(opencre_documents))
+        ]
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [compare] if name == "CWE" else []
+        )
+        db_mock.return_value.session.query.return_value.all.return_value = internal_ids
+        db_mock.return_value.get_CREs.side_effect = lambda internal_id=None, **kwargs: [
+            next(
+                cre
+                for index, cre in enumerate(opencre_documents)
+                if internal_id == f"cre-internal-{index}"
+            )
+        ]
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=CWE&standard=OpenCRE",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertIn("result", payload)
+        self.assertEqual([compare.id], list(payload["result"].keys()))
+        self.assertEqual(1, len(payload["result"][compare.id]["paths"]))
+        path = next(iter(payload["result"][compare.id]["paths"].values()))
+        self.assertEqual(compare.id, payload["result"][compare.id]["start"]["id"])
+        self.assertEqual(direct_cre.name, path["end"]["name"])
+        self.assertEqual("", path["path"][0]["start"]["id"])
+        self.assertEqual(direct_cre.id, path["path"][0]["end"]["id"])
+        schedule_mock.assert_not_called()
+
+    @patch.object(web_main.gap_analysis, "schedule")
+    @patch.object(db, "Node_collection")
+    def test_gap_analysis_returns_only_direct_opencre_mappings_when_opencre_is_left(
+        self, db_mock, schedule_mock
+    ) -> None:
+        compare = defs.Standard(
+            name="CWE",
+            sectionID="1004",
+            section="Sensitive Cookie Without 'HttpOnly' Flag",
+        )
+        direct_cre = defs.CRE(
+            id="804-220",
+            name="Set httponly attribute for cookie-based session tokens",
+            description="",
+        )
+        direct_cre.add_link(
+            defs.Link(ltype=defs.LinkTypes.LinkedTo, document=compare.shallow_copy())
+        )
+        indirect_cre = defs.CRE(
+            id="117-371",
+            name="Use a centralized access control mechanism",
+            description="",
+        )
+        indirect_cre.add_link(
+            defs.Link(
+                ltype=defs.LinkTypes.AutomaticallyLinkedTo,
+                document=compare.shallow_copy(),
+            )
+        )
+
+        opencre_documents = [direct_cre, indirect_cre]
+        internal_ids = [
+            SimpleNamespace(id=f"cre-internal-{i}")
+            for i in range(len(opencre_documents))
+        ]
+
+        db_mock.return_value.get_gap_analysis_result.return_value = None
+        db_mock.return_value.gap_analysis_exists.return_value = False
+        db_mock.return_value.get_nodes.side_effect = lambda name=None, **kwargs: (
+            [compare] if name == "CWE" else []
+        )
+        db_mock.return_value.session.query.return_value.all.return_value = internal_ids
+        db_mock.return_value.get_CREs.side_effect = lambda internal_id=None, **kwargs: [
+            next(
+                cre
+                for index, cre in enumerate(opencre_documents)
+                if internal_id == f"cre-internal-{index}"
+            )
+        ]
+
+        with self.app.test_client() as client:
+            response = client.get(
+                "/rest/v1/map_analysis?standard=OpenCRE&standard=CWE",
+                headers={"Content-Type": "application/json"},
+            )
+
+        payload = json.loads(response.data)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([direct_cre.id], list(payload["result"].keys()))
+        self.assertEqual(1, len(payload["result"][direct_cre.id]["paths"]))
+        path = next(iter(payload["result"][direct_cre.id]["paths"].values()))
+        self.assertEqual(direct_cre.id, payload["result"][direct_cre.id]["start"]["id"])
+        self.assertEqual(compare.id, path["end"]["id"])
+        self.assertEqual(direct_cre.id, path["path"][0]["start"]["id"])
+        self.assertEqual(compare.id, path["path"][0]["end"]["id"])
+        schedule_mock.assert_not_called()
 
     @patch.object(cre_main, "resource_name_ga_eligible_in_db")
     @patch.object(redis, "from_url")
@@ -757,7 +970,7 @@ class TestMain(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             )
             self.assertEqual(200, response.status_code)
-            self.assertEqual(["ASVS", "CAPEC"], json.loads(response.data))
+            self.assertEqual(["ASVS", "CAPEC", "OpenCRE"], json.loads(response.data))
 
     def test_gap_analysis_weak_links_no_cache(self) -> None:
         with self.app.test_client() as client:
@@ -954,8 +1167,6 @@ class TestMain(unittest.TestCase):
             )
 
     def test_import_from_cre_csv(self) -> None:
-        os.environ["CRE_ALLOW_IMPORT"] = "True"
-
         input_data, _ = data_gen.export_format_data()
         workspace = tempfile.mkdtemp()
         data = {}
@@ -967,19 +1178,20 @@ class TestMain(unittest.TestCase):
 
         data["cre_csv"] = open(os.path.join(workspace, "cre.csv"), "rb")
 
-        with self.app.test_client() as client:
-            response = client.post(
-                "/rest/v1/cre_csv_import",
-                data=data,
-                buffered=True,
-                content_type="multipart/form-data",
-            )
-            print(f"\nSTATUS CODE: {response.status_code}, DATA: {response.data}")
-            self.assertEqual(200, response.status_code)
-            data = json.loads(response.data)
-            self.assertEqual("success", data.get("status"))
-            self.assertGreaterEqual(data.get("new_standards"), 2)
-            self.assertIsInstance(data.get("new_cres"), list)
+        with patch.dict(os.environ, {"CRE_ALLOW_IMPORT": "True"}):
+            with self.app.test_client() as client:
+                response = client.post(
+                    "/rest/v1/cre_csv_import",
+                    data=data,
+                    buffered=True,
+                    content_type="multipart/form-data",
+                )
+                print(f"\nSTATUS CODE: {response.status_code}, DATA: {response.data}")
+                self.assertEqual(200, response.status_code)
+                data = json.loads(response.data)
+                self.assertEqual("success", data.get("status"))
+                self.assertGreaterEqual(data.get("new_standards"), 2)
+                self.assertIsInstance(data.get("new_cres"), list)
 
     def test_get_cre_csv(self) -> None:
         # empty string means temporary db

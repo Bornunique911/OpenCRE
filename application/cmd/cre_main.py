@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import hashlib
 import json as _json
 from rq import Queue, job, exceptions
+from sqlalchemy import not_
 
 from application.utils.external_project_parsers.base_parser import BaseParser
 from application.utils.external_project_parsers.parsers import master_spreadsheet_parser
@@ -28,6 +29,7 @@ from application.utils import db_backend
 from alive_progress import alive_bar
 from application.prompt_client import prompt_client as prompt_client
 from application.utils import gap_analysis
+from application.utils import cres_csv_export
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -649,11 +651,15 @@ def download_gap_analysis_from_upstream(cache: str) -> None:
                     )
                     if res.status_code == 200:
                         tojson = res.json()
-                        if tojson.get("result"):
-                            cache_key = gap_analysis.make_resources_key([sa, sb])
-                            collection.add_gap_analysis_result(
-                                cache_key, _json.dumps({"result": tojson.get("result")})
-                            )
+                        if "result" not in tojson:
+                            continue
+                        payload = _json.dumps({"result": tojson.get("result")})
+                        if not gap_analysis.primary_gap_analysis_payload_is_material(
+                            payload
+                        ):
+                            continue
+                        cache_key = gap_analysis.make_resources_key([sa, sb])
+                        collection.add_gap_analysis_result(cache_key, payload)
                     bar()
         else:
             for sa, sb in pairs:
@@ -662,18 +668,33 @@ def download_gap_analysis_from_upstream(cache: str) -> None:
                 )
                 if res.status_code == 200:
                     tojson = res.json()
-                    if tojson.get("result"):
-                        cache_key = gap_analysis.make_resources_key([sa, sb])
-                        collection.add_gap_analysis_result(
-                            cache_key, _json.dumps({"result": tojson.get("result")})
-                        )
+                    if "result" not in tojson:
+                        continue
+                    payload = _json.dumps({"result": tojson.get("result")})
+                    if not gap_analysis.primary_gap_analysis_payload_is_material(
+                        payload
+                    ):
+                        continue
+                    cache_key = gap_analysis.make_resources_key([sa, sb])
+                    collection.add_gap_analysis_result(cache_key, payload)
 
 
 def _missing_ga_pairs(collection: db.Node_collection) -> List[Tuple[str, str]]:
-    standards = sorted(collection.standards())
+    from application.utils.ga_parity import ga_matrix_standard_names
+
+    standards = ga_matrix_standard_names(collection)
+    rows = (
+        collection.session.query(
+            db.GapAnalysisResults.cache_key, db.GapAnalysisResults.ga_object
+        )
+        .filter(not_(db.GapAnalysisResults.cache_key.like("% >> %->%")))
+        .all()
+    )
     existing = {
-        key
-        for (key,) in collection.session.query(db.GapAnalysisResults.cache_key).all()
+        str(key)
+        for key, payload in rows
+        if key
+        and gap_analysis.primary_gap_analysis_payload_is_material(str(payload or ""))
     }
     missing: List[Tuple[str, str]] = []
     for sa in standards:
@@ -813,6 +834,14 @@ def run(args: argparse.Namespace) -> None:  # pragma: no cover
     script_path = os.path.dirname(os.path.realpath(__file__))
     os.path.join(script_path, "../cres")
 
+    if getattr(args, "export", False):
+        csv_out = getattr(args, "csv", "").strip()
+        if not csv_out:
+            raise ValueError("--export requires --csv <path>")
+        rows = cres_csv_export.export_cres_and_standards_csv(output_path=csv_out)
+        logger.info("Exported %s rows to %s", rows, csv_out)
+        return
+
     if args.add and getattr(args, "from_ai_exchange_csv", None):
         add_from_ai_exchange_csv(
             csv_path=args.from_ai_exchange_csv,
@@ -910,7 +939,9 @@ def run(args: argparse.Namespace) -> None:  # pragma: no cover
     if args.import_external_projects:
         BaseParser().call_importers(db_connection_str=args.cache_file)
 
-    if args.generate_embeddings:
+    if getattr(args, "regenerate_embeddings", False):
+        regenerate_embeddings(args.cache_file)
+    elif args.generate_embeddings:
         generate_embeddings(args.cache_file)
     if args.populate_neo4j_db:
         populate_neo4j_db(args.cache_file)
@@ -974,6 +1005,14 @@ def prepare_for_review(cache: str) -> Tuple[str, str]:
 
 def generate_embeddings(db_url: str) -> None:
     database = db_connect(path=db_url)
+    prompt_client.PromptHandler(database, load_all_embeddings=True)
+
+
+def regenerate_embeddings(db_url: str) -> None:
+    """Wipe all embedding rows, then rebuild (CRE + every node type) like ``--generate_embeddings``."""
+    database = db_connect(path=db_url)
+    removed = database.delete_all_embeddings()
+    logger.info("Removed %s embedding rows; rebuilding embeddings", removed)
     prompt_client.PromptHandler(database, load_all_embeddings=True)
 
 
