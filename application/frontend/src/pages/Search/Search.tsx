@@ -69,7 +69,15 @@ export const SearchPage = () => {
   };
 
   const scrollToNextSection = () => {
-    const sections = ['about', 'how-to-use', 'features', 'founders', 'contact', 'community', 'page-footer'];
+    const sections = [
+      'about',
+      'how-to-use',
+      'features',
+      'founders',
+      'contact',
+      'community',
+      'page-footer',
+    ];
     const currentScrollY = window.scrollY;
     for (const sectionId of sections) {
       const section = document.getElementById(sectionId);
@@ -129,7 +137,10 @@ export const SearchPage = () => {
         <div className="hero-section__content">
           <div className="hero-section__logo-container">
             <div className="logo-wrapper">
-              <img src="/banner.png" alt="OpenCRE - Open Common Requirement Enumeration" />
+              <img
+                src="/banner.png"
+                alt="OpenCRE - Open Common Requirement Enumeration"
+              />
             </div>
             <p className="logo-subtitle">
               All security standards and guidelines <span>unified</span>
@@ -138,9 +149,12 @@ export const SearchPage = () => {
 
           <div className="hero-section__description">
             <p>
-              OpenCRE is an interactive content linking platform that unites security standards and
-              guidelines into one resource. It makes it easier for practitioners to find information, with mappings, deeplinks, browse, search, and 
-              an AI chatbot. Writers of material just have to refer to one OpenCRE requirement, to link to coverage if that topic in all the standards.
+              OpenCRE is an interactive content linking platform that unites
+              security standards and guidelines into one resource. It makes it
+              easier for practitioners to find information, with mappings,
+              deeplinks, browse, search, and an AI chatbot. Writers of material
+              just have to refer to one OpenCRE requirement, to link to coverage
+              if that topic in all the standards.
             </p>
           </div>
 
@@ -155,7 +169,9 @@ export const SearchPage = () => {
                       type="text"
                       placeholder="Search for security topics ..."
                       value={search.term}
-                      onChange={(e) => setSearch({ ...search, term: e.target.value })}
+                      onChange={(e) =>
+                        setSearch({ ...search, term: e.target.value })
+                      }
                       className="search-bar__input"
                     />
                     <button type="submit" className="search-bar__button">
@@ -173,9 +189,10 @@ export const SearchPage = () => {
             <div className="info-card info-card--blue">
               <h3 className="info-card__title">What is OpenCRE?</h3>
               <p className="info-card__text">
-                An <strong>interactive knowledge graph</strong> for security standards and guidelines when
-                designing, developing, auditing, testing and procuring for cyber security. It links and
-                unlocks these resources into one unified overview.
+                An <strong>interactive knowledge graph</strong> for security
+                standards and guidelines when designing, developing, auditing,
+                testing and procuring for cyber security. It links and unlocks
+                these resources into one unified overview.
               </p>
             </div>
 
@@ -183,8 +200,9 @@ export const SearchPage = () => {
               <h3 className="info-card__title">How does it work?</h3>
               <p className="info-card__text">
                 OpenCRE links each section of a standard to the corresponding{' '}
-                <strong>Common Requirement</strong>, causing that section to also link with all other
-                standards that link to the same requirement.
+                <strong>Common Requirement</strong>, causing that section to
+                also link with all other standards that link to the same
+                requirement.
               </p>
             </div>
 
@@ -192,12 +210,15 @@ export const SearchPage = () => {
               <h3 className="info-card__title">Standards unified</h3>
               <div className="info-card__text">
                 <p>
-                  OpenCRE currently links <strong>OWASP standards</strong> (Top 10, ASVS, Proactive Controls,
-                  Cheat sheets, Testing guide, ZAP, Juice shop, SAMM, AI Exchange, LLM top 10, ML top 10).
+                  OpenCRE currently links <strong>OWASP standards</strong> (Top
+                  10, ASVS, Proactive Controls, Cheat sheets, Testing guide,
+                  ZAP, Juice shop, SAMM, AI Exchange, LLM top 10, ML top 10).
                 </p>
                 <p>
-                  Plus several <strong>other sources</strong> (CWE, CAPEC, NIST 800 53, NIST 800 63b, Cloud
-                  Control Matrix, ISO27001, ISO27002, NIST SSDF, and for AI: NIST, ENISA, BIML, MITRE ATLAS, and ETSI).
+                  Plus several <strong>other sources</strong> (CWE, CAPEC, NIST
+                  800 53, NIST 800 63b, Cloud Control Matrix, ISO27001,
+                  ISO27002, NIST SSDF, and for AI: NIST, ENISA, BIML, MITRE
+                  ATLAS, and ETSI).
                 </p>
               </div>
             </div>
@@ -233,8 +254,8 @@ export const SearchPage = () => {
                   .
                 </p>
                 <p>
-                  Try the <strong>Top10 2021 page</strong> and click around, or search for{' '}
-                  <strong>Session</strong>.
+                  Try the <strong>Top10 2021 page</strong> and click around, or
+                  search for <strong>Session</strong>.
                 </p>
               </div>
             </div>
@@ -244,8 +265,11 @@ export const SearchPage = () => {
               </div>
               <h3 className="htu-card__title">Link from your document / tool</h3>
               <p className="htu-card__text">
-                Link with the CRE ID: <a href="https://opencre.org/cre/764-507">opencre.org/cre/764-507</a> or
-                use a familiar standard such as CWE:{' '}
+                Link with the CRE ID:{' '}
+                <a href="https://opencre.org/cre/764-507">
+                  opencre.org/cre/764-507
+                </a>{' '}
+                or use a familiar standard such as CWE:{' '}
                 <a href="https://opencre.org/smartlink/standard/CWE/611">
                   opencre.org/smartlink/standard/CWE/611
                 </a>
@@ -260,7 +284,9 @@ export const SearchPage = () => {
               <p className="htu-card__text">
                 Check out our{' '}
                 <strong>
-                  <a href="https://opencre.org/explorer/circles">visual explorer</a>
+                  <a href="https://opencre.org/explorer/circles">
+                    visual explorer
+                  </a>
                 </strong>{' '}
                 of Common Requirements.
               </p>
@@ -296,14 +322,17 @@ export const SearchPage = () => {
                 <p>
                   Use{' '}
                   <strong>
-                    <a href="https://www.opencre.org/chatbot">OpenCRE Chat</a>
+                    <a href="https://www.opencre.org/chatbot">
+                      OpenCRE Chat
+                    </a>
                   </strong>{' '}
                   to ask any security question.
                 </p>
 
                 <p>
-                  In collaboration with <strong>Google</strong>, we injected all the standards in OpenCRE into
-                  an AI model to create the most comprehensive security chatbot. This ensures you get a more{' '}
+                  In collaboration with <strong>Google</strong>, we injected all
+                  the standards in OpenCRE into an AI model to create the most
+                  comprehensive security chatbot. This ensures you get a more{' '}
                   <strong>reliable answer</strong>, and also a reference to a{' '}
                   <strong>reputable source</strong>.
                 </p>
@@ -321,11 +350,12 @@ export const SearchPage = () => {
                 <strong>
                   <a href="/map_analysis">Map Analysis</a>
                 </strong>{' '}
-                as a tool to explore and understand the connections between two standards.
+                as a tool to explore and understand the connections between two
+                standards.
               </p>
               <p className="feature-block__text">
-                See how <strong>any two standards connect</strong> with each other, providing valuable
-                insights.
+                See how <strong>any two standards connect</strong> with each
+                other, providing valuable insights.
               </p>
             </div>
           </div>
@@ -343,13 +373,17 @@ export const SearchPage = () => {
                   <div className="founder__img-wrapper">
                     <img alt="Spyros Gasteratos" src="/spyros.jpeg" />
                   </div>
-                  <h3 className="founder__name founder__name--spyros">SPYROS GASTERATOS</h3>
+                  <h3 className="founder__name founder__name--spyros">
+                    SPYROS GASTERATOS
+                  </h3>
                 </div>
                 <div className="founder">
                   <div className="founder__img-wrapper">
                     <img alt="Rob Van Der Veer" src="/rob.jpeg" />
                   </div>
-                  <h3 className="founder__name founder__name--rob">ROB VAN DER VEER</h3>
+                  <h3 className="founder__name founder__name--rob">
+                    ROB VAN DER VEER
+                  </h3>
                 </div>
               </div>
             </div>
@@ -357,15 +391,19 @@ export const SearchPage = () => {
               <div className="text-card">
                 <p>
                   OpenCRE is the brainchild of software security professionals{' '}
-                  <strong>Spyros Gasteratos</strong> and <strong>Rob van der Veer</strong>, who joined forces
-                  to tackle the complexities and segmentation in current security standards and guidelines.
-                  They collaborated closely with many initiatives, including <strong>SKF</strong>,{' '}
-                  <strong>OpenSSF</strong> and the <strong>Owasp Top10</strong> project.
+                  <strong>Spyros Gasteratos</strong> and{' '}
+                  <strong>Rob van der Veer</strong>, who joined forces to tackle
+                  the complexities and segmentation in current security
+                  standards and guidelines. They collaborated closely with many
+                  initiatives, including <strong>SKF</strong>,{' '}
+                  <strong>OpenSSF</strong> and the{' '}
+                  <strong>Owasp Top10</strong> project.
                 </p>
                 <p>
-                  OpenCRE is an open-source platform overseen by the <strong>OWASP foundation</strong> through
-                  the <strong>OWASP Integration standard project</strong>. The goal is to foster better
-                  coordination among security initiatives.
+                  OpenCRE is an open-source platform overseen by the{' '}
+                  <strong>OWASP foundation</strong> through the{' '}
+                  <strong>OWASP Integration standard project</strong>. The goal
+                  is to foster better coordination among security initiatives.
                 </p>
               </div>
             </div>
@@ -384,14 +422,19 @@ export const SearchPage = () => {
               </p>
               <div className="contact-card__info">
                 <p className="info-item">
-                  <a href="mailto:rob.vanderveer@owasp.org" className="highlight-link">
+                  <a
+                    href="mailto:rob.vanderveer@owasp.org"
+                    className="highlight-link"
+                  >
                     rob.vanderveer[at]owasp.org
                   </a>
                 </p>
                 <p className="info-item linkedin-text">
                   Follow our{' '}
                   <span>
-                    <a href="https://www.linkedin.com/company/opencre/posts/?feedView=all">LinkedIn page</a>
+                    <a href="https://www.linkedin.com/company/opencre/posts/?feedView=all">
+                      LinkedIn page
+                    </a>
                   </span>
                 </p>
               </div>
@@ -399,12 +442,15 @@ export const SearchPage = () => {
                 <p>
                   For more details, see this{' '}
                   <strong>
-                    <a href="https://www.youtube.com/watch?v=TwNroVARmB0">interview and demo video</a>
+                    <a href="https://www.youtube.com/watch?v=TwNroVARmB0">
+                      interview and demo video
+                    </a>
                   </strong>
                   , read the{' '}
                   <strong>
                     <a href="https://github.com/OWASP/www-project-integration-standards/raw/master/writeups/opencredcslides.pdf">
-                      OpenCRE slides from the 2023 Appsec conference in Washington DC
+                      OpenCRE slides from the 2023 Appsec conference in
+                      Washington DC
                     </a>
                   </strong>
                 </p>
@@ -418,8 +464,8 @@ export const SearchPage = () => {
             <h2 className="section__title">JOIN OUR COMMUNITY</h2>
             <div className="section__divider section__divider--blue-em-purp"></div>
             <p className="section__description">
-              Connect with security professionals, contribute to the project, and stay updated with the latest
-              developments.
+              Connect with security professionals, contribute to the project,
+              and stay updated with the latest developments.
             </p>
           </div>
           <div className="community-grid">
@@ -432,8 +478,8 @@ export const SearchPage = () => {
               </div>
               <h3 className="community-card__title">Slack Community</h3>
               <p className="community-card__text">
-                Join our active Slack workspace to discuss security topics, ask questions, and collaborate
-                with fellow professionals.
+                Join our active Slack workspace to discuss security topics, ask
+                questions, and collaborate with fellow professionals.
               </p>
               <a href="https://owasp.org/slack/invite">
                 <button className="community-card__button">Join Slack</button>
@@ -448,8 +494,8 @@ export const SearchPage = () => {
               </div>
               <h3 className="community-card__title">LinkedIn</h3>
               <p className="community-card__text">
-                Follow our LinkedIn page for professional updates, industry insights, and networking
-                opportunities.
+                Follow our LinkedIn page for professional updates, industry
+                insights, and networking opportunities.
               </p>
               <a href="https://www.linkedin.com/company/opencre/posts/?feedView=all">
                 <button className="community-card__button">Follow Us</button>
@@ -464,11 +510,13 @@ export const SearchPage = () => {
               </div>
               <h3 className="community-card__title">GitHub</h3>
               <p className="community-card__text">
-                Contribute to the open-source project, report issues, and explore the codebase on our GitHub
-                repository.
+                Contribute to the open-source project, report issues, and
+                explore the codebase on our GitHub repository.
               </p>
               <a href="https://github.com/OWASP/OpenCRE#opencre">
-                <button className="community-card__button">View Repository</button>
+                <button className="community-card__button">
+                  View Repository
+                </button>
               </a>
             </div>
           </div>
@@ -481,15 +529,22 @@ export const SearchPage = () => {
                 <Link to="/" className="logo-link">
                   <img src="../logo.svg" alt="Logo" />
                 </Link>
-                <p>Connecting security standards, requirements, and tools in one comprehensive platform.</p>
+                <p>
+                  Connecting security standards, requirements, and tools in one
+                  comprehensive platform.
+                </p>
               </div>
 
               <div className="footer__links-column">
                 <h4 className="column-title">Standards</h4>
                 <div className="links-list">
                   <a href="https://owasp.org/">OWASP</a>
-                  <a href="https://opencre.org/node/standard/NIST%20800-53%20v5/section/">NIST</a>
-                  <a href="https://opencre.org/node/standard/ISO%2027001/section/">ISO27001</a>
+                  <a href="https://opencre.org/node/standard/NIST%20800-53%20v5/section/">
+                    NIST
+                  </a>
+                  <a href="https://opencre.org/node/standard/ISO%2027001/section/">
+                    ISO27001
+                  </a>
                   <a href="https://opencre.org/node/standard/CWE/">CWE</a>
                 </div>
               </div>
@@ -497,17 +552,25 @@ export const SearchPage = () => {
               <div className="footer__links-column">
                 <h4 className="column-title">Resources</h4>
                 <div className="links-list">
-                  <a href="https://github.com/OWASP/OpenCRE/blob/main/README.md">Documentation</a>
-                  <a href="https://github.com/OWASP/OpenCRE/blob/main/docs/my-opencre-user-guide.md">API</a>
+                  <a href="https://github.com/OWASP/OpenCRE/blob/main/README.md">
+                    Documentation
+                  </a>
+                  <a href="https://github.com/OWASP/OpenCRE/blob/main/docs/my-opencre-user-guide.md">
+                    API
+                  </a>
                   <a href="https://github.com/OWASP/OpenCRE/">GitHub</a>
-                  <a href="https://github.com/OWASP/OpenCRE/blob/main/docs/CONTRIBUTING.md">Contribute</a>
+                  <a href="https://github.com/OWASP/OpenCRE/blob/main/docs/CONTRIBUTING.md">
+                    Contribute
+                  </a>
                 </div>
               </div>
 
               <div className="footer__links-column">
                 <h4 className="column-title">More Details</h4>
                 <div className="links-list">
-                  <a href="https://www.youtube.com/watch?v=TwNroVARmB0">Demo Video</a>
+                  <a href="https://www.youtube.com/watch?v=TwNroVARmB0">
+                    Demo Video
+                  </a>
                   <a href="https://github.com/OWASP/www-project-integration-standards/raw/master/writeups/opencredcslides.pdf">
                     Slides OWASP DC
                   </a>
