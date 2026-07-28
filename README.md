@@ -117,12 +117,6 @@ Notes:
 - `--csv` is required when using `--export`.
 - This mode exports report data from the OpenCRE API and does not mutate the local DB.
 
-If you need to review a remote spreadsheet locally, you can run:
-
-```bash
-python cre.py --review --from_spreadsheet <google sheets url>
-```
-
 If you need to add a remote spreadsheet to your local database, you can run:
 
 ```bash
@@ -136,13 +130,13 @@ the CSV import endpoint with imports enabled:
 ```bash
 export CRE_ALLOW_IMPORT=true
 make start-containers
-make dev-flask
 ```
 
 Then use:
 
 - `GET /rest/v1/cre_csv` to download a template
 - `POST /rest/v1/cre_csv_import` to upload your CSV
+- send the multipart file field as `cre_csv`
 
 This import flow is intended for local development. Do not expect custom CSV
 imports to be available on the public `opencre.org` deployment.

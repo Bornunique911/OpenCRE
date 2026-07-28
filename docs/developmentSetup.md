@@ -134,7 +134,6 @@ or the CSV import endpoint:
 ```bash
 export CRE_ALLOW_IMPORT=true
 make start-containers
-make dev-flask
 ```
 
 Then you can:
@@ -142,6 +141,7 @@ Then you can:
 - open the local MyOpenCRE UI
 - download a CSV template from `GET /rest/v1/cre_csv`
 - upload your CSV to `POST /rest/v1/cre_csv_import`
+- send the multipart file field as `cre_csv`
 
 This workflow is intended for local development. Do not expect custom imports
 to be enabled on the public `opencre.org` deployment.
