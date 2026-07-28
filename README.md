@@ -79,6 +79,9 @@ For contributors, this is the supported local data bootstrap path. You do
 **not** need access to the internal OpenCRE Google Sheet to work on the
 project.
 
+The public `opencre.org` instance is not the place to test custom imports.
+For mapping work, run the backend locally and use your local database.
+
 You can precompute local gap-analysis cache after imports with:
 
 ```bash
@@ -132,6 +135,7 @@ the CSV import endpoint with imports enabled:
 
 ```bash
 export CRE_ALLOW_IMPORT=true
+make start-containers
 make dev-flask
 ```
 
@@ -139,6 +143,9 @@ Then use:
 
 - `GET /rest/v1/cre_csv` to download a template
 - `POST /rest/v1/cre_csv_import` to upload your CSV
+
+This import flow is intended for local development. Do not expect custom CSV
+imports to be available on the public `opencre.org` deployment.
 
 To run the web application for development you can run:
 
