@@ -35,6 +35,7 @@ from flask import (
     Blueprint,
     abort,
     jsonify,
+    make_response,
     redirect,
     request,
     send_from_directory,
@@ -882,19 +883,49 @@ def add_header(response):
     return response
 
 
+def _is_logged_in() -> bool:
+    """Single source of truth for session presence.
+
+    Keyed on ``session['user_id']`` (recorded by the login flow since #980) — not
+    ``google_id``/``name``. Both ``login_required`` and its content-negotiation
+    branch route through here, so the predicate lives in exactly one place.
+    """
+    return "user_id" in session
+
+
+def _auth_challenge():
+    """Response for an unauthenticated request, negotiated by Accept.
+
+    Default is a clean 401 so tooling (curl/requests/scripts, a bare ``*/*`` or
+    a missing Accept header) and ``/admin/*`` tooling get a machine-readable
+    challenge instead of being 302'd into login HTML. Only real browsers -- which
+    advertise ``text/html`` in Accept (e.g.
+    ``text/html,application/xhtml+xml,...;q=0.9,*/*;q=0.8``) -- get the 302 to the
+    login flow. Matched as a substring, so a bare ``*/*`` does not qualify.
+
+    The redirect target is the constant login route with no ``?next`` param:
+    ``auth_login`` does not consume a return target and ``auth_callback`` always
+    lands on ``/chatbot``, so forwarding the request path here would be a dead
+    (and taint-flagged) value. Return-to-page is a separate, future feature that
+    would store a validated target in the session at login time.
+    """
+    if "text/html" in request.headers.get("Accept", ""):
+        return redirect("/rest/v1/auth/login")
+    allowed_domains = os.environ.get("LOGIN_ALLOWED_DOMAINS")
+    abort(
+        401,
+        description=f"You need an account with one of the following providers to access this functionality {allowed_domains}",
+    )
+
+
 def login_required(f):
     @wraps(f)
     def login_r(*args, **kwargs):
         if os.environ.get("NO_LOGIN") == "1":
             return f(*args, **kwargs)
-        if "google_id" not in session or "name" not in session:
-            allowed_domains = os.environ.get("LOGIN_ALLOWED_DOMAINS")
-            abort(
-                401,
-                description=f"You need an account with one of the following providers to access this functionality {allowed_domains}",
-            )
-        else:
-            return f(*args, **kwargs)
+        if not _is_logged_in():
+            return _auth_challenge()
+        return f(*args, **kwargs)
 
     return login_r
 
@@ -1232,7 +1263,7 @@ class CREFlow:
                     "openid",
                 ],
                 redirect_uri=(
-                    request.root_url.rstrip("/") + url_for("web.callback")
+                    request.root_url.rstrip("/") + url_for("web.auth_callback")
                 ).replace("http://", "https://"),
             )
         return cls.__instance
@@ -1241,8 +1272,8 @@ class CREFlow:
         raise ValueError("class is a singleton, please call instance() instead")
 
 
-@app.route("/rest/v1/login")
-def login():
+@app.route("/rest/v1/auth/login")
+def auth_login():
     if os.environ.get("NO_LOGIN") == "1":
         session["state"] = {"state": True}
         session["google_id"] = "some dev id"
@@ -1269,16 +1300,16 @@ def login():
     return redirect(authorization_url)
 
 
-@app.route("/rest/v1/user")
+@app.route("/rest/v1/auth/user")
 @login_required
-def logged_in_user():
+def auth_user():
     if os.environ.get("NO_LOGIN") == "1":
         return "foobar"
     return session.get("email")
 
 
-@app.route("/rest/v1/callback")
-def callback():
+@app.route("/rest/v1/auth/callback")
+def auth_callback():
     flow_instance = CREFlow.instance()
     try:
         flow_instance.flow.fetch_token(
@@ -1287,7 +1318,7 @@ def callback():
     except oauthlib.oauth2.rfc6749.errors.MismatchingStateError as mse:
         return redirect("/chatbot")
     if not session.get("state") or session.get("state") != request.args["state"]:
-        redirect(url_for("web.login"))  # State does not match!
+        return redirect(url_for("web.auth_login"))  # State does not match!
     credentials = flow_instance.flow.credentials
     token_request = google.auth.transport.requests.Request()
     id_info = id_token.verify_oauth2_token(
@@ -1317,35 +1348,74 @@ def callback():
             description=f"You need an account with one of the following providers to access this functionality {allowed_domains}",
         )
 
-    # Persist the account when login is enabled; the session keeps working
-    # unchanged if this no-ops (flag off) or fails.
+    # Persist the account when login is enabled. ``session['user_id']`` is what
+    # ``_is_logged_in`` checks, so if persistence cannot establish it we must NOT
+    # redirect as if login succeeded: that would leave a "logged-in-looking"
+    # session that fails every ``login_required`` call and bounces the user back
+    # into the login flow. Fail explicitly (retryable) instead.
     if is_login_enabled():
         google_sub = id_info.get("sub")
         if not google_sub:
             logger.error(
-                "OIDC callback returned no 'sub' claim; skipping user persistence"
+                "OIDC callback returned no 'sub' claim; cannot establish session"
             )
-        else:
-            try:
-                user = db.Node_collection().upsert_user(
-                    google_sub=google_sub,
-                    email=id_info.get("email") or "",
-                    display_name=id_info.get("name"),
-                )
-                session["user_id"] = user.id
-            except SQLAlchemyError as e:
-                # Keep DB failures soft so persistence can never block login, but
-                # let unexpected (non-DB) bugs surface instead of being swallowed.
-                # Log only the exception class: the message can carry SQL
-                # parameters such as the user's email or OIDC subject.
-                logger.error("failed to persist user on login: %s", type(e).__name__)
+            abort(
+                401, description="Login failed: identity provider returned no subject"
+            )
+        try:
+            user = db.Node_collection().upsert_user(
+                google_sub=google_sub,
+                email=id_info.get("email") or "",
+                display_name=id_info.get("name"),
+            )
+            session["user_id"] = user.id
+        except SQLAlchemyError as e:
+            # Log only the exception class: the message can carry SQL parameters
+            # such as the user's email or OIDC subject. Surface a retryable 503
+            # rather than a silently broken session.
+            logger.error("failed to persist user on login: %s", type(e).__name__)
+            abort(
+                503,
+                description="Login temporarily unavailable, please try again",
+            )
     return redirect("/chatbot")
+
+
+@app.route("/rest/v1/auth/logout")
+def auth_logout():
+    session.clear()
+    return redirect("/")
+
+
+# --- Deprecated auth aliases (RFC #876 TODO 1 migration) --------------------
+# Keep the old paths working during the migration but signal deprecation. These
+# are header-only (no redirect to the canonical path), so /callback's OAuth
+# code/state flow is left untouched.
+def _deprecated_auth(response, canonical):
+    resp = make_response(response)
+    resp.headers["Deprecation"] = "true"
+    resp.headers["Link"] = f'<{canonical}>; rel="successor-version"'
+    return resp
+
+
+@app.route("/rest/v1/login")
+def login():
+    return _deprecated_auth(auth_login(), "/rest/v1/auth/login")
+
+
+@app.route("/rest/v1/user")
+def logged_in_user():
+    return _deprecated_auth(auth_user(), "/rest/v1/auth/user")
+
+
+@app.route("/rest/v1/callback")
+def callback():
+    return _deprecated_auth(auth_callback(), "/rest/v1/auth/callback")
 
 
 @app.route("/rest/v1/logout")
 def logout():
-    session.clear()
-    return redirect("/")
+    return _deprecated_auth(auth_logout(), "/rest/v1/auth/logout")
 
 
 @openapi_documented("get_user_resources")
